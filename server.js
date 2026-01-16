@@ -1,26 +1,23 @@
 /*******************************************************************************************
  *
- * SERVER.JS (v1.5 INTEGRATED - CACHING & PROGRESS)
- * ===============================================
+ * SERVER.JS (v1.4 STABLE)
+ * ===========================
  *
  * HISTORY:
- * - v1.4: Added Supabase Persistence (Storage + DB).
- * - v1.5 (CURRENT): Added Duplicate Check (Feature 3) and optimized worker pool.
+ * - v1.4: Integrated Supabase + 2-Pass Logic.
+ * - RESTORED: Reverted to this version as v1.5 was unstable.
  *
  *******************************************************************************************/
 
-console.log("=== SERVER.JS FILE LOADED (v1.5 INTEGRATED) ===");
+console.log("=== SERVER.JS FILE LOADED (v1.4 STABLE) ===");
 
-// ==========================================================================================
-// ZONE 0: IMPORTS & CONFIGURATION
-// ==========================================================================================
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import multer from "multer";
 import pdf from "pdf-parse";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { createClient } from '@supabase/supabase-js'; 
+import { createClient } from '@supabase/supabase-js';
 import { normalizePolicy } from "./services/normalizePolicy.js";
 
 dotenv.config();
@@ -35,7 +32,6 @@ const upload = multer({
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- SUPABASE SETUP (NEW) ---
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
   console.warn("⚠️  WARNING: Supabase credentials missing. Persistence disabled.");
 }
@@ -43,11 +39,7 @@ const supabase = process.env.SUPABASE_URL
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY) 
   : null;
 
-
-// ==========================================================================================
-// ZONE 1: UTILITIES
-// ==========================================================================================
-
+// --- UTILITIES ---
 function withTimeout(promise, ms = 25000) {
   return Promise.race([
     promise,
@@ -64,10 +56,7 @@ function repairTextGlue(text) {
   return text.replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
-// ==========================================================================================
-// ZONE 1.5: SUPABASE HELPERS (NEW)
-// ==========================================================================================
-
+// --- SUPABASE HELPERS ---
 async function uploadFileToSupabase(file) {
   if (!supabase) return null;
   try {
@@ -77,7 +66,6 @@ async function uploadFileToSupabase(file) {
       .upload(safeName, file.buffer, { contentType: file.mimetype, upsert: false });
 
     if (error) throw error;
-
     const { data: { publicUrl } } = supabase.storage.from('raw-pdfs').getPublicUrl(safeName);
     return publicUrl;
   } catch (err) {
@@ -119,11 +107,7 @@ async function completeJobRecord(jobId, result, meta, stats) {
   }
 }
 
-
-// ==========================================================================================
-// ZONE 2: METADATA EXTRACTION
-// ==========================================================================================
-
+// --- METADATA EXTRACTION ---
 function firstNonEmptyLine(text) {
   const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
   return lines.length ? lines[0] : null;
@@ -163,11 +147,7 @@ function extractPolicyMetadata(text) {
   };
 }
 
-
-// ==========================================================================================
-// ZONE 3: CHUNKING
-// ==========================================================================================
-
+// --- CHUNKING ---
 const SECTION_HEADERS = [
   "DEFINITION", "DEFINITIONS", "COVER", "COVERAGE", "BENEFITS", "EXCLUSIONS",
   "WAITING PERIOD", "PRE-EXISTING", "LIMITS", "CLAIMS", "CONDITIONS", "TERMS AND CONDITIONS"
@@ -232,11 +212,7 @@ function createSemanticChunks(text) {
   return chunks;
 }
 
-
-// ==========================================================================================
-// ZONE 4: CLASSIFICATION
-// ==========================================================================================
-
+// --- CLASSIFICATION ---
 function isDefinitionChunk(text) {
   const t = text.toLowerCase();
   const earlyText = t.slice(0, 150); 
@@ -257,11 +233,7 @@ function classifyChunkHint(text) {
   return "mixed";
 }
 
-
-// ==========================================================================================
-// ZONE 5: JSON PARSING
-// ==========================================================================================
-
+// --- JSON PARSING ---
 function safeJsonParse(rawText) {
   if (!rawText) return null;
   const cleaned = rawText.replace(/```json|```/g, "").trim();
@@ -271,11 +243,7 @@ function safeJsonParse(rawText) {
   try { return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)); } catch { return null; }
 }
 
-
-// ==========================================================================================
-// ZONE 6: QUALITY GATES
-// ==========================================================================================
-
+// --- QUALITY GATES ---
 function isJunkRule(text) {
   const t = String(text || "").trim();
   if (t.length < 10) return true;
@@ -292,14 +260,10 @@ function isGoodDefinitionPair(term, definition) {
   return true;
 }
 
-
-// ==========================================================================================
-// ZONE 7: GEMINI
-// ==========================================================================================
-
+// --- GEMINI (v1.4 LOGIC) ---
 function getGeminiModel(definitionMode, maxTokens) {
   return genAI.getGenerativeModel({
-    model: "gemini-2.0-flash",
+    model: "gemini-2.0-flash", // Kept the faster model
     generationConfig: { maxOutputTokens: maxTokens, temperature: 0 }
   });
 }
@@ -347,59 +311,32 @@ function routeParsed(parsed, collected) {
   return { storedAny: stored };
 }
 
-
-// ==========================================================================================
-// ZONE 8: MAIN ROUTE (INTEGRATED)
-// ==========================================================================================
-
+// --- MAIN ROUTE ---
 app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
   console.log("UPLOAD ENDPOINT HIT");
   try {
     if (!req.file) return res.status(400).json({ error: "No PDF uploaded" });
 
-    // --- FEATURE 3: CACHING / DUPLICATE CHECK ---
-    if (supabase) {
-      const { data: existing } = await supabase
-        .from('jobs')
-        .select('*')
-        .eq('filename', req.file.originalname)
-        .eq('status', 'COMPLETED')
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      if (existing && existing.length > 0) {
-        console.log("CACHE HIT: Returning existing report for", req.file.originalname);
-        return res.json({
-          message: "Report available in library",
-          isCached: true,
-          ...existing[0].result,
-          meta: existing[0].meta
-        });
-      }
-    }
-
-    // --- 1. PERSISTENCE ---
-    console.log("1. Uploading raw PDF to Supabase...");
+    // 1. Persistence
+    console.log("1. Uploading to Storage...");
     const publicUrl = await uploadFileToSupabase(req.file);
-    console.log("   -> Raw URL:", publicUrl);
+    console.log("   -> URL:", publicUrl || "Skipped (Local)");
 
-    console.log("2. Creating database record...");
+    console.log("2. Creating Job...");
     const job = await createJobRecord(req.file.originalname, publicUrl);
-    console.log("   -> Record ID:", job.id);
+    console.log("   -> Job ID:", job.id);
 
-    // --- 2. PROCESSING ---
-    console.log("3. Parsing PDF text...");
+    // 2. Processing
     const data = await pdf(req.file.buffer);
     const policyMeta = extractPolicyMetadata(data.text);
-    console.log("   -> Metadata extracted:", policyMeta.policy_name);
-    
     const chunks = createSemanticChunks(data.text);
-    console.log(`TOTAL SEMANTIC CHUNKS GENERATED: ${chunks.length}`);
+    console.log(`TOTAL CHUNKS: ${chunks.length}`);
 
     const collected = { definitions: {}, coverage: [], exclusions: [], waiting_periods: [], financial_limits: [], claim_rejection_conditions: [] };
     let parsedChunks = 0, failedChunks = 0;
     const pass2Candidates = [];
 
+    // Worker Pool
     const runWorkerPool = async (tasks, concurrency, isPass2 = false) => {
       let index = 0;
       const workers = [];
@@ -424,28 +361,26 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
               if (!isPass2 && storedAny && isHighSignalRuleChunk(task.text)) pass2Candidates.push(task);
             }
           } catch (e) {
-            console.error(`[Worker ${id}] Chunk Failed:`, e.message);
+            console.error(`[Worker ${id}] Error:`, e.message);
             failedChunks++;
           }
-          await sleep(50);
+          await sleep(100);
         }
       };
       for (let w = 0; w < concurrency; w++) workers.push(worker(w + 1));
       await Promise.all(workers);
     };
 
-    console.log("4. Starting Worker Pool (Pass 1)...");
     await runWorkerPool(chunks, 5); 
-    console.log(`PASS 1 DONE. Success: ${parsedChunks}, Fail: ${failedChunks}, Candidates for P2: ${pass2Candidates.length}`);
+    console.log(`PASS 1 DONE. Candidates for P2: ${pass2Candidates.length}`);
 
     if (pass2Candidates.length > 0) {
       const uniqueTasks = [...new Map(pass2Candidates.map(item => [item.id, item])).values()];
-      console.log(`5. Starting High-Intensity Pass 2 with ${uniqueTasks.length} candidates...`);
+      console.log(`STARTING PASS 2 with ${uniqueTasks.length} chunks...`);
       await runWorkerPool(uniqueTasks, 5, true);
     }
 
-    // --- 3. FINALIZE ---
-    console.log("6. Finalizing and Deduplicating Rules...");
+    // 3. Finalize
     const dedup = (arr) => [...new Set(arr.map(s => String(s).trim()))];
     collected.coverage = dedup(collected.coverage);
     collected.exclusions = dedup(collected.exclusions);
@@ -453,7 +388,6 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     collected.financial_limits = dedup(collected.financial_limits);
     collected.claim_rejection_conditions = dedup(collected.claim_rejection_conditions);
 
-    console.log("7. Normalizing Policy Structure...");
     const cpdm = buildCPDM(policyMeta, collected);
     const normalized = normalizePolicy([{
         coverage: collected.coverage,
@@ -463,15 +397,14 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
         claim_risks: collected.claim_rejection_conditions
     }]);
 
-    // --- 4. SAVE RESULT ---
-    console.log("8. Saving final result to database...");
-    await completeJobRecord(job.id, { cpdm, normalized, definitions: collected.definitions }, policyMeta, { parsedChunks, failedChunks });
-    console.log("🚀 JOB COMPLETE.");
+    console.log("3. Saving Results...");
+    await completeJobRecord(job.id, cpdm, policyMeta, { parsedChunks, failedChunks });
+    console.log("   -> Saved.");
 
     res.json({
       message: "Analysis Complete",
       jobId: job.id,
-      isCached: false,
+      fileUrl: publicUrl,
       meta: { ...policyMeta, totalChunks: chunks.length, parsedChunks, failedChunks },
       definitions: collected.definitions,
       normalized,
@@ -479,21 +412,25 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     });
 
   } catch (e) {
-    console.error("⛔ EXTREME FAILURE:", e.stack);
+    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
 
+// --- CPDM BUILDER ---
 function buildCPDM(policyMeta, collected) {
   const definitions = Object.entries(collected.definitions).map(([term, definition]) => ({ term, definition }));
-  const rules = [
-    ...collected.coverage.map(text => ({ category: "coverage", text })),
-    ...collected.exclusions.map(text => ({ category: "exclusion", text })),
-    ...collected.waiting_periods.map(text => ({ category: "waiting_period", text })),
-    ...collected.financial_limits.map(text => ({ category: "financial_limit", text })),
-    ...collected.claim_rejection_conditions.map(text => ({ category: "claim_rejection", text }))
-  ];
-  return { meta: policyMeta, definitions, rules };
+  const coverages = collected.coverage.map(text => ({ category: "coverage", text }));
+  const exclusions = collected.exclusions.map(text => ({ category: "exclusion", text }));
+  const waitingPeriods = collected.waiting_periods.map(text => ({ category: "waiting_period", text }));
+  const limits = collected.financial_limits.map(text => ({ category: "financial_limit", text }));
+  const claimRisks = collected.claim_rejection_conditions.map(text => ({ category: "claim_rejection", text }));
+  
+  return {
+    meta: policyMeta,
+    definitions,
+    rules: [ ...coverages, ...exclusions, ...waitingPeriods, ...limits, ...claimRisks ]
+  };
 }
 
-app.listen(3000, () => console.log("Server running on port 3000. Listening for PDF audits..."));
+app.listen(3000, () => console.log("Server running on 3000"));
