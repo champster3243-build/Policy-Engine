@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>AI Web App</title>
+</head>
+<body>
+
+<h2>AI Text Analyzer</h2>
+
+<textarea id="input" rows="8" cols="60"></textarea>
+<br><br>
+<button onclick="send()">Analyze</button>
+
+<h3>Result</h3>
+<pre id="output"></pre>
+
+<script>
+async function send() {
+  const text = document.getElementById("input").value;
+
+  const response = await fetch("http://localhost:3000/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text })
+  });
+
+  const data = await response.json();
+  document.getElementById("output").textContent =
+    data.result || data.error;
+}
+</script>
+
+</body>
+</html>

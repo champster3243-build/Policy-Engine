@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<h2>Upload PDF</h2>
+
+<form id="form">
+  <input type="file" id="pdf" accept="application/pdf" />
+  <br><br>
+  <button type="submit">Upload</button>
+</form>
+
+<pre id="result"></pre>
+
+<script>
+console.log("UPLOAD SCRIPT LOADED");
+
+document.getElementById("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  console.log("FORM SUBMITTED");
+
+  const fileInput = document.getElementById("pdf");
+
+  if (!fileInput.files.length) {
+    alert("Please select a PDF file first");
+    console.log("NO FILE SELECTED");
+    return;
+  }
+
+  console.log("FILE SELECTED:", fileInput.files[0].name);
+
+  const formData = new FormData();
+  formData.append("pdf", fileInput.files[0]);
+
+  console.log("SENDING REQUEST TO BACKEND");
+
+  try {
+    const res = await fetch("http://localhost:3000/upload-pdf", {
+      method: "POST",
+      body: formData
+    });
+
+    console.log("RAW RESPONSE:", res);
+
+    const data = await res.json();
+    console.log("JSON RESPONSE:", data);
+
+    document.getElementById("result").textContent =
+      JSON.stringify(data, null, 2);
+
+  } catch (err) {
+    console.error("FETCH ERROR:", err);
+    document.getElementById("result").textContent =
+      "Upload failed. See console for details.";
+  }
+});
+</script>
+
+</body>
+</html>
