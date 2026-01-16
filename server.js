@@ -897,7 +897,7 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     
     // Create semantic chunks (1400 chars each, 100 char overlap)
     const chunks = createSemanticChunks(data.text);
-    console.log(`TOTAL CHUNKS: ${chunks.length}`);
+    console.log('TOTAL CHUNKS: ${chunks.lenght}')
 
     // ─────────────────────────────────────────────────────────────────────────────────
     // STEP 3: INITIALIZE DATA COLLECTION
