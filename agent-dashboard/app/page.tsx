@@ -4,6 +4,7 @@
  * ═══════════════════════════════════════════════════════════════════════════════════════
  * * DESIGN PHILOSOPHY: Aggressive, High-Contrast, Precision-Engineered.
  * * TECH STACK: Next.js + Tailwind + html-to-image (Modern CSS Support)
+ * * EXPORT ENGINE: html-to-image (Fixes 'lab' color crashes)
  * */
 
 "use client";
@@ -66,7 +67,7 @@ export default function AgentDashboard() {
       // 1. Capture High-Fidelity Dark Mode Image
       const dataUrl = await toPng(element, { 
         cacheBust: true,
-        backgroundColor: '#020617', // Force Slate-950 background for the PDF
+        backgroundColor: '#0a0a0a', // Force Neutral-950 background for PDF
         quality: 1.0,
         pixelRatio: 2, // Retina quality
       });
@@ -95,7 +96,7 @@ export default function AgentDashboard() {
       pdf.save(`Elite-Audit-${data?.meta?.policy_name || "Report"}.pdf`);
     } catch (err) {
       console.error("Export Error:", err);
-      alert("Export Failed. Try Chrome.");
+      alert("Export Failed. Check console.");
     } finally {
       if(btn) btn.innerText = "DOWNLOAD REPORT";
     }
@@ -120,7 +121,7 @@ export default function AgentDashboard() {
       <div className="border-b border-neutral-800 bg-neutral-950/50 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-3">
-            <div className="bg-rose-600 p-2 rounded-lg">
+            <div className="bg-rose-600 p-2 rounded-lg shadow-lg shadow-rose-600/20">
               <Activity className="w-5 h-5 text-white" />
             </div>
             <h1 className="text-xl font-black tracking-tighter uppercase">
@@ -145,25 +146,33 @@ export default function AgentDashboard() {
           
           {/* UPLOAD CARD */}
           <div className="bg-neutral-900 border border-neutral-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group">
+            {/* Ambient Glow */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-rose-600/10 rounded-full blur-3xl -mr-16 -mt-16 transition-all group-hover:bg-rose-600/20"></div>
             
             <h2 className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-6 flex items-center gap-2">
               <Upload className="w-4 h-4" /> Upload Policy
             </h2>
 
-            <label className="block w-full aspect-[4/3] border-2 border-dashed border-neutral-700 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:border-rose-500 hover:bg-neutral-800/50 transition-all duration-300 relative">
-              <input type="file" accept=".pdf" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-              <div className="bg-neutral-800 p-4 rounded-full mb-4 group-hover:scale-110 transition-transform">
-                <FileText className="w-8 h-8 text-neutral-400 group-hover:text-rose-500" />
+            <div className="relative group/drop">
+              <input 
+                type="file" 
+                accept=".pdf" 
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
+                onChange={(e) => setFile(e.target.files?.[0] || null)} 
+              />
+              <div className="block w-full aspect-[4/3] border-2 border-dashed border-neutral-700 rounded-2xl flex flex-col items-center justify-center transition-all duration-300 group-hover/drop:border-rose-500 group-hover/drop:bg-neutral-800/50">
+                <div className="bg-neutral-800 p-4 rounded-full mb-4 group-hover/drop:scale-110 transition-transform">
+                  <FileText className="w-8 h-8 text-neutral-400 group-hover/drop:text-rose-500" />
+                </div>
+                <p className="text-sm font-bold text-white">{file ? file.name : "DRAG & DROP PDF"}</p>
+                <p className="text-[10px] text-neutral-500 font-mono mt-2 uppercase">Max Size: 10MB</p>
               </div>
-              <p className="text-sm font-bold text-white">{file ? file.name : "DRAG & DROP PDF"}</p>
-              <p className="text-[10px] text-neutral-500 font-mono mt-2">MAX SIZE: 10MB</p>
-            </label>
+            </div>
 
             <button 
               onClick={handleUpload} 
               disabled={!file || loading}
-              className="w-full mt-6 bg-white text-black font-black py-4 rounded-xl uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="w-full mt-6 bg-white text-black font-black py-4 rounded-xl uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-white/10 hover:shadow-rose-500/20"
             >
               {loading ? <Loader2 className="animate-spin w-5 h-5"/> : "Run Audit"}
             </button>
@@ -205,7 +214,7 @@ export default function AgentDashboard() {
                     <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
                     <span className="text-xs font-bold text-emerald-500 uppercase tracking-widest">Analysis Complete</span>
                   </div>
-                  <h1 className="text-4xl md:text-5xl font-black text-white leading-tight mb-4 uppercase italic">
+                  <h1 className="text-4xl md:text-5xl font-black text-white leading-tight mb-4 uppercase italic tracking-tighter">
                     {data.cpdm?.meta?.policy_name || "Policy Audit"}
                   </h1>
                   <div className="flex flex-wrap gap-3">
@@ -322,10 +331,14 @@ function Section({ title, subtitle, rules, color }: { title: string, subtitle: s
     rose: "bg-rose-500", amber: "bg-amber-500", blue: "bg-blue-500", purple: "bg-purple-500"
   };
 
+  const shadowClasses: any = {
+    rose: "shadow-rose-500/50", amber: "shadow-amber-500/50", blue: "shadow-blue-500/50", purple: "shadow-purple-500/50"
+  };
+
   return (
     <div>
       <div className="flex items-start gap-4 mb-6">
-        <div className={`w-1 h-12 ${colorClasses[color]} rounded-full shadow-[0_0_15px_rgba(0,0,0,0.5)] shadow-${color}-500/50`}></div>
+        <div className={`w-1 h-12 ${colorClasses[color]} rounded-full shadow-[0_0_15px] ${shadowClasses[color]}`}></div>
         <div>
           <h3 className="text-xl font-black text-white tracking-wide">{title}</h3>
           <p className="text-xs font-medium text-neutral-500 uppercase tracking-widest mt-1">{subtitle}</p>
@@ -333,7 +346,7 @@ function Section({ title, subtitle, rules, color }: { title: string, subtitle: s
       </div>
       <div className="grid gap-3 pl-5">
         {rules.map((r, i) => (
-          <div key={i} className="bg-neutral-900 border border-neutral-800 p-4 rounded-xl flex gap-4 items-start hover:border-neutral-700 transition-all">
+          <div key={i} className="bg-neutral-900 border border-neutral-800 p-4 rounded-xl flex gap-4 items-start hover:border-neutral-700 transition-all hover:bg-neutral-800/30">
             <ChevronRight className="w-4 h-4 text-neutral-600 mt-0.5 shrink-0" />
             <p className="text-sm font-medium text-neutral-300 leading-relaxed">{r.text}</p>
           </div>
