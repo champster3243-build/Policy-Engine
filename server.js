@@ -35,12 +35,14 @@ const upload = multer({
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// --- SUPABASE SETUP (NEW) ---
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
   console.warn("⚠️  WARNING: Supabase credentials missing. Persistence disabled.");
 }
 const supabase = process.env.SUPABASE_URL 
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY) 
   : null;
+
 
 // ==========================================================================================
 // ZONE 1: UTILITIES
@@ -63,7 +65,7 @@ function repairTextGlue(text) {
 }
 
 // ==========================================================================================
-// ZONE 1.5: SUPABASE HELPERS
+// ZONE 1.5: SUPABASE HELPERS (NEW)
 // ==========================================================================================
 
 async function uploadFileToSupabase(file) {
@@ -75,6 +77,7 @@ async function uploadFileToSupabase(file) {
       .upload(safeName, file.buffer, { contentType: file.mimetype, upsert: false });
 
     if (error) throw error;
+
     const { data: { publicUrl } } = supabase.storage.from('raw-pdfs').getPublicUrl(safeName);
     return publicUrl;
   } catch (err) {
@@ -115,6 +118,7 @@ async function completeJobRecord(jobId, result, meta, stats) {
     console.error("DB Update Error:", err.message);
   }
 }
+
 
 // ==========================================================================================
 // ZONE 2: METADATA EXTRACTION
@@ -158,6 +162,7 @@ function extractPolicyMetadata(text) {
     policy_year: text.match(/(20\d{2})/)?.[1] || null
   };
 }
+
 
 // ==========================================================================================
 // ZONE 3: CHUNKING
@@ -227,6 +232,7 @@ function createSemanticChunks(text) {
   return chunks;
 }
 
+
 // ==========================================================================================
 // ZONE 4: CLASSIFICATION
 // ==========================================================================================
@@ -251,6 +257,7 @@ function classifyChunkHint(text) {
   return "mixed";
 }
 
+
 // ==========================================================================================
 // ZONE 5: JSON PARSING
 // ==========================================================================================
@@ -263,6 +270,7 @@ function safeJsonParse(rawText) {
   if (firstBrace === -1 || lastBrace <= firstBrace) return null;
   try { return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)); } catch { return null; }
 }
+
 
 // ==========================================================================================
 // ZONE 6: QUALITY GATES
@@ -283,6 +291,7 @@ function isGoodDefinitionPair(term, definition) {
   if (t.toLowerCase().includes("accident accident")) return false;
   return true;
 }
+
 
 // ==========================================================================================
 // ZONE 7: GEMINI
@@ -338,6 +347,7 @@ function routeParsed(parsed, collected) {
   return { storedAny: stored };
 }
 
+
 // ==========================================================================================
 // ZONE 8: MAIN ROUTE (INTEGRATED)
 // ==========================================================================================
@@ -391,6 +401,7 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
           if (i >= tasks.length) break;
           const task = tasks[i];
           const defMode = task.hint === "definitions" || isDefinitionChunk(task.text);
+          console.log(`[${isPass2 ? 'P2' : 'P1'} Worker ${id}] Processing ${i+1}/${tasks.length} | Mode: ${defMode ? 'DEF' : 'RULE'}`);
           
           const model = getGeminiModel(defMode, isPass2 ? 4096 : 1024);
           const prompt = buildPrompt(defMode, task.text, isPass2);
@@ -415,9 +426,11 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     };
 
     await runWorkerPool(chunks, 5); 
+    console.log(`PASS 1 DONE. Candidates for P2: ${pass2Candidates.length}`);
 
     if (pass2Candidates.length > 0) {
       const uniqueTasks = [...new Map(pass2Candidates.map(item => [item.id, item])).values()];
+      console.log(`STARTING PASS 2 with ${uniqueTasks.length} chunks...`);
       await runWorkerPool(uniqueTasks, 5, true);
     }
 
