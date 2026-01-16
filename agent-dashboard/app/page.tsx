@@ -1,200 +1,205 @@
 "use client";
-import { useState } from 'react';
-import { Upload, FileText, AlertTriangle, CheckCircle, Shield, XCircle, Activity } from 'lucide-react';
+import { useState, useRef } from "react";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
+import { Upload, FileText, CheckCircle, AlertTriangle, Shield, AlertOctagon, Download, Loader2 } from "lucide-react";
 
 export default function AgentDashboard() {
-  const [file, setFile] = useState(null);
-  const [status, setStatus] = useState('IDLE'); // IDLE, UPLOADING, PROCESSING, COMPLETE, ERROR
-  const [data, setData] = useState(null);
-  const [jobId, setJobId] = useState(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [status, setStatus] = useState("IDLE"); // IDLE, UPLOADING, PROCESSING, COMPLETED
+  const [progress, setProgress] = useState(0);
+  const [data, setData] = useState<any>(null);
+  const dashboardRef = useRef<HTMLDivElement>(null);
 
-  const handleFileChange = (e: any) => {
-    if (e.target.files) setFile(e.target.files[0]);
-  };
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://your-render-url.onrender.com";
 
   const handleUpload = async () => {
     if (!file) return;
-    setStatus('UPLOADING');
+    setStatus("UPLOADING");
+    setProgress(10);
 
     const formData = new FormData();
-    formData.append('pdf', file);
+    formData.append("pdf", file);
 
     try {
-      // 1. Send to your Backend
-      // Use the Environment Variable, or default to localhost if missing
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
-const response = await fetch(`${API_URL}/upload-pdf`, {
-        method: 'POST',
-        body: formData,
-      });
+      // 1. Upload & Get Job ID
+      const res = await fetch(`${API_URL}/upload-pdf`, { method: "POST", body: formData });
+      const { jobId, cached } = await res.json();
 
-      const result = await response.json();
-      
-      if (result.jobId) {
-        setJobId(result.jobId);
-        setStatus('COMPLETE');
-        setData(result); // In a real app, we would poll. Here we get result instantly.
-      } else {
-        setStatus('ERROR');
+      if (cached) {
+        // If cached, fetch results immediately
+        const jobRes = await fetch(`${API_URL}/job-status/${jobId}`);
+        const jobData = await jobRes.json();
+        setData(jobData.result);
+        setStatus("COMPLETED");
+        return;
       }
+
+      // 2. Poll for Progress
+      setStatus("PROCESSING");
+      const interval = setInterval(async () => {
+        const pollRes = await fetch(`${API_URL}/job-status/${jobId}`);
+        const job = await pollRes.json();
+        
+        setProgress(job.progress || 10); // Update progress bar
+
+        if (job.status === "COMPLETED") {
+          clearInterval(interval);
+          setData(job.result);
+          setStatus("COMPLETED");
+        } else if (job.status === "FAILED") {
+          clearInterval(interval);
+          alert("Analysis Failed.");
+          setStatus("IDLE");
+        }
+      }, 2000); // Check every 2 seconds
+
     } catch (e) {
       console.error(e);
-      setStatus('ERROR');
+      alert("Upload failed.");
+      setStatus("IDLE");
     }
   };
 
+  // FEATURE 1: EXPORT PDF
+  const exportPDF = async () => {
+    if (!dashboardRef.current) return;
+    const canvas = await html2canvas(dashboardRef.current, { scale: 2 });
+    const imgData = canvas.toDataURL("image/png");
+    const pdf = new jsPDF("p", "mm", "a4");
+    const pdfWidth = pdf.internal.pageSize.getWidth();
+    const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+    
+    pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
+    pdf.save("Policy-Analysis-Report.pdf");
+  };
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 p-8 font-sans">
-      <div className="max-w-5xl mx-auto">
+    <div className="min-h-screen bg-slate-50 p-8 font-sans text-slate-900">
+      <div className="max-w-5xl mx-auto space-y-8">
         
         {/* HEADER */}
-        <div className="mb-10 flex items-center justify-between">
+        <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-bold text-slate-800">Agent Command Center</h1>
+            <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Agent Command Center</h1>
             <p className="text-slate-500 mt-1">Upload competitor policies to find gaps instantly.</p>
           </div>
-          <div className="bg-white px-4 py-2 rounded-lg border shadow-sm text-sm font-mono text-slate-600">
-            System Status: <span className="text-emerald-600 font-bold">ONLINE</span>
+          <div className="flex items-center gap-2">
+            <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold border border-green-200">
+              System Status: ONLINE
+            </span>
           </div>
         </div>
 
-        {/* UPLOAD SECTION */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          <div className="md:col-span-1 space-y-4">
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h2 className="font-semibold mb-4 flex items-center gap-2">
+          
+          {/* LEFT: UPLOAD CARD */}
+          <div className="col-span-1 space-y-4">
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+              <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
                 <Upload className="w-5 h-5 text-blue-600" /> Upload Policy
               </h2>
-              <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center hover:bg-slate-50 transition-colors">
+              <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 flex flex-col items-center justify-center text-center hover:bg-slate-50 transition-colors cursor-pointer relative">
                 <input 
                   type="file" 
-                  accept="application/pdf" 
-                  onChange={handleFileChange} 
-                  className="hidden" 
-                  id="pdf-upload"
+                  accept=".pdf"
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  className="absolute inset-0 opacity-0 cursor-pointer"
                 />
-                <label htmlFor="pdf-upload" className="cursor-pointer flex flex-col items-center gap-2">
-                  <FileText className="w-8 h-8 text-slate-400" />
-                  <span className="text-sm font-medium text-slate-600">
-                    {file ? file.name : "Click to Select PDF"}
-                  </span>
-                </label>
+                <FileText className="w-10 h-10 text-slate-400 mb-2" />
+                <p className="text-sm text-slate-600 font-medium">
+                  {file ? file.name : "Click to Upload PDF"}
+                </p>
               </div>
-              
+
+              {/* PROGRESS BAR */}
+              {status === "PROCESSING" && (
+                <div className="mt-4">
+                  <div className="flex justify-between text-xs text-slate-500 mb-1">
+                    <span>Analyzing...</span>
+                    <span>{progress}%</span>
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-2">
+                    <div 
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-500" 
+                      style={{ width: `${progress}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+
               <button 
                 onClick={handleUpload}
-                disabled={!file || status === 'UPLOADING' || status === 'PROCESSING'}
-                className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2"
+                disabled={status !== "IDLE" && status !== "COMPLETED"}
+                className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50"
               >
-                {status === 'UPLOADING' ? <Activity className="animate-spin w-4 h-4"/> : 'Analyze Policy'}
+                {status === "PROCESSING" ? <Loader2 className="w-4 h-4 animate-spin"/> : "Analyze Policy"}
               </button>
             </div>
-
-            {/* JOB STATUS CARD */}
-            {jobId && (
-              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                <div className="text-xs font-bold text-slate-400 uppercase mb-1">Last Job ID</div>
-                <div className="font-mono text-xs text-slate-600 break-all">{jobId}</div>
-                <div className="mt-2 text-xs flex items-center gap-1 text-emerald-600 font-medium">
-                  <CheckCircle className="w-3 h-3" /> Analysis Complete
-                </div>
-              </div>
-            )}
           </div>
 
-          {/* RESULTS SECTION */}
-          <div className="md:col-span-2">
-            {status === 'COMPLETE' && data ? (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          {/* RIGHT: RESULTS DASHBOARD */}
+          <div className="col-span-2">
+            {data ? (
+              <div ref={dashboardRef} className="space-y-6">
                 
-                {/* META CARD */}
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex items-start justify-between">
+                {/* Header Card */}
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex justify-between items-start">
                   <div>
-                    <h3 className="text-xl font-bold text-slate-800">{data.meta.policy_name || "Unknown Policy"}</h3>
+                    <h2 className="text-xl font-bold text-slate-900">{data.meta?.policy_name || "Policy Analysis"}</h2>
                     <div className="flex gap-4 mt-2 text-sm text-slate-500">
-                      <span>Insurer: {data.meta.insurer || "N/A"}</span>
-                      <span>Chunks Processed: {data.meta.totalChunks}</span>
+                      <span>Insurer: {data.meta?.insurer || "N/A"}</span>
                     </div>
                   </div>
-                  <div className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">
-                    {data.meta.document_type}
-                  </div>
+                  <button onClick={exportPDF} className="text-blue-600 hover:text-blue-800 flex items-center gap-1 text-sm font-medium">
+                    <Download className="w-4 h-4" /> Export Report
+                  </button>
                 </div>
 
-                {/* EXCLUSIONS (RED) */}
-                <div className="bg-white rounded-xl border border-red-100 shadow-sm overflow-hidden">
-                  <div className="bg-red-50 px-6 py-4 border-b border-red-100 flex items-center gap-2">
-                    <XCircle className="w-5 h-5 text-red-600" />
-                    <h3 className="font-bold text-red-900">Critical Exclusions</h3>
-                  </div>
-                  <div className="p-6">
-                    <ul className="space-y-3">
-                      {data.normalized.exclusions.length > 0 ? (
-                        data.normalized.exclusions.slice(0, 5).map((item, i) => (
-                          <li key={i} className="flex gap-3 text-sm text-slate-700">
-                            <span className="text-red-400 font-mono select-none">•</span>
-                            {item}
-                          </li>
-                        ))
-                      ) : (
-                        <li className="text-slate-400 italic">No explicit exclusions detected.</li>
-                      )}
-                    </ul>
-                  </div>
+                {/* Exclusions Card (RED) */}
+                <div className="bg-red-50 p-6 rounded-xl border border-red-100">
+                  <h3 className="text-red-800 font-bold flex items-center gap-2 mb-4">
+                    <AlertOctagon className="w-5 h-5" /> Critical Exclusions
+                  </h3>
+                  <ul className="space-y-3">
+                    {data.rules?.filter((r:any) => r.category === 'exclusion').length > 0 ? (
+                      data.rules.filter((r:any) => r.category === 'exclusion').map((item: any, idx: number) => (
+                        <li key={idx} className="flex gap-3 text-red-700 text-sm items-start">
+                          <span className="mt-1.5 w-1.5 h-1.5 bg-red-400 rounded-full shrink-0"></span>
+                          {item.text}
+                        </li>
+                      ))
+                    ) : (
+                      <p className="text-red-400 italic text-sm">No explicit exclusions detected.</p>
+                    )}
+                  </ul>
                 </div>
 
-                {/* WAITING PERIODS (AMBER) */}
-                <div className="bg-white rounded-xl border border-amber-100 shadow-sm overflow-hidden">
-                  <div className="bg-amber-50 px-6 py-4 border-b border-amber-100 flex items-center gap-2">
-                    <AlertTriangle className="w-5 h-5 text-amber-600" />
-                    <h3 className="font-bold text-amber-900">Waiting Periods</h3>
-                  </div>
-                  <div className="p-6">
-                    <ul className="space-y-3">
-                      {data.normalized.waiting_periods.length > 0 ? (
-                        data.normalized.waiting_periods.slice(0, 5).map((item, i) => (
-                          <li key={i} className="flex gap-3 text-sm text-slate-700">
-                            <span className="text-amber-400 font-mono select-none">⏱</span>
-                            {item}
-                          </li>
-                        ))
-                      ) : (
-                        <li className="text-slate-400 italic">No waiting periods detected.</li>
-                      )}
-                    </ul>
-                  </div>
-                </div>
-
-                 {/* COVERAGE (GREEN) */}
-                 <div className="bg-white rounded-xl border border-emerald-100 shadow-sm overflow-hidden">
-                  <div className="bg-emerald-50 px-6 py-4 border-b border-emerald-100 flex items-center gap-2">
-                    <Shield className="w-5 h-5 text-emerald-600" />
-                    <h3 className="font-bold text-emerald-900">Core Coverage</h3>
-                  </div>
-                  <div className="p-6">
-                    <ul className="space-y-3">
-                      {data.normalized.coverage.length > 0 ? (
-                        data.normalized.coverage.slice(0, 5).map((item, i) => (
-                          <li key={i} className="flex gap-3 text-sm text-slate-700">
-                            <span className="text-emerald-400 font-mono select-none">✓</span>
-                            {item}
-                          </li>
-                        ))
-                      ) : (
-                        <li className="text-slate-400 italic">No coverage details detected.</li>
-                      )}
-                    </ul>
-                  </div>
+                {/* Waiting Periods (YELLOW) */}
+                <div className="bg-amber-50 p-6 rounded-xl border border-amber-100">
+                  <h3 className="text-amber-800 font-bold flex items-center gap-2 mb-4">
+                    <AlertTriangle className="w-5 h-5" /> Waiting Periods
+                  </h3>
+                  <ul className="space-y-2">
+                    {data.rules?.filter((r:any) => r.category === 'waiting_period').map((item: any, idx: number) => (
+                        <li key={idx} className="flex gap-3 text-amber-900 text-sm">
+                          <span className="mt-1.5 w-1.5 h-1.5 bg-amber-400 rounded-full shrink-0"></span>
+                          {item.text}
+                        </li>
+                    ))}
+                  </ul>
                 </div>
 
               </div>
             ) : (
-              <div className="h-full flex flex-col items-center justify-center text-slate-400 min-h-[400px] border-2 border-dashed border-slate-200 rounded-xl">
-                <FileText className="w-12 h-12 mb-4 opacity-20" />
-                <p>Results will appear here after analysis.</p>
+              // Empty State
+              <div className="h-full flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50 min-h-[400px]">
+                <Shield className="w-16 h-16 mb-4 opacity-20" />
+                <p>Upload a policy to view the analysis</p>
               </div>
             )}
           </div>
+
         </div>
       </div>
     </div>
