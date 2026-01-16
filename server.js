@@ -1,21 +1,27 @@
 /*******************************************************************************************
- * * SERVER.JS (v1.4 STABLE - HEAVILY ANNOTATED FOR JUNIOR DEVELOPERS)
+ * 
+ * SERVER.JS (v1.4 STABLE - HEAVILY ANNOTATED FOR JUNIOR DEVELOPERS)
  * ==================================================================================
- * * PURPOSE: This backend performs AI-powered policy analysis using a TWO-PASS system.
- * * ARCHITECTURE OVERVIEW:
+ * 
+ * PURPOSE: This backend performs AI-powered policy analysis using a TWO-PASS system.
+ * 
+ * ARCHITECTURE OVERVIEW:
  * ┌─────────────┐      ┌──────────────┐      ┌─────────────┐      ┌──────────────┐
  * │   Client    │─────▶│   Express    │─────▶│   Gemini    │─────▶│   Supabase   │
  * │ (Next.js)   │◀─────│   Server     │◀─────│  AI Model   │◀─────│  (Storage +  │
  * │             │ JSON │              │ JSON │             │ JSON │   Database)  │
  * └─────────────┘      └──────────────┘      └─────────────┘      └──────────────┘
- * * TWO-PASS LOGIC EXPLANATION:
+ * 
+ * TWO-PASS LOGIC EXPLANATION:
  * - PASS 1: Scan all chunks with LOW token count (fast & cheap) to identify high-signal content
  * - PASS 2: Re-process only "promising" chunks with HIGH token count for deep extraction
- * * WHY TWO PASSES?
+ * 
+ * WHY TWO PASSES?
  * - Cost optimization: We don't waste expensive tokens on irrelevant text
  * - Accuracy: High-signal chunks get a second, more thorough analysis
  * - Speed: First pass filters out ~70% of chunks quickly
- * *******************************************************************************************/
+ * 
+ *******************************************************************************************/
 
 console.log("=== SERVER.JS FILE LOADED (v1.4 STABLE) ===");
 
@@ -50,11 +56,13 @@ app.use(express.json());
 
 /**
  * MULTER CONFIGURATION
- * * WHY MEMORY STORAGE?
+ * 
+ * WHY MEMORY STORAGE?
  * - We don't need to save files to disk temporarily
  * - Keeps the file in RAM as a Buffer for immediate processing
  * - Cleaner for serverless/cloud deployments (no disk I/O)
- * * FILE SIZE LIMIT: 10MB
+ * 
+ * FILE SIZE LIMIT: 10MB
  * - Most insurance policy PDFs are 2-5 MB
  * - 10MB provides buffer for larger documents
  */
@@ -69,7 +77,8 @@ const upload = multer({
 
 /**
  * GEMINI AI INITIALIZATION
- * * We're using Google's Gemini 2.5 Flash model because:
+ * 
+ * We're using Google's Gemini 2.5 Flash model because:
  * - Fast response times (< 3 seconds per chunk)
  * - Cost-effective for bulk processing
  * - Good accuracy for structured extraction tasks
@@ -78,7 +87,8 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 /**
  * SUPABASE INITIALIZATION (WITH FALLBACK)
- * * WHY THE CONDITIONAL CHECK?
+ * 
+ * WHY THE CONDITIONAL CHECK?
  * - Allows local development without Supabase credentials
  * - Graceful degradation: if credentials missing, app still works (but no persistence)
  * - Production: ALWAYS set these variables
@@ -97,11 +107,13 @@ const supabase = process.env.SUPABASE_URL
 
 /**
  * TIMEOUT WRAPPER FOR GEMINI CALLS
- * * WHY NEEDED?
+ * 
+ * WHY NEEDED?
  * - Gemini API can occasionally hang or be slow
  * - Without timeout, the server would wait indefinitely
  * - 25 seconds is generous (most calls finish in 2-5s)
- * * HOW IT WORKS:
+ * 
+ * HOW IT WORKS:
  * - Promise.race() returns whichever promise resolves first
  * - Either the Gemini call succeeds, or the timeout rejects
  */
@@ -116,7 +128,8 @@ function withTimeout(promise, ms = 25000) {
 
 /**
  * SLEEP UTILITY
- * * WHY NEEDED?
+ * 
+ * WHY NEEDED?
  * - Prevents rate-limiting from Gemini API
  * - 100ms delay between chunks is polite and avoids 429 errors
  */
@@ -126,9 +139,11 @@ function sleep(ms = 0) {
 
 /**
  * TEXT GLUE REPAIR
- * * PROBLEM: PDF extraction often concatenates words without spaces
+ * 
+ * PROBLEM: PDF extraction often concatenates words without spaces
  * Example: "ExclusionsInclude" → "Exclusions Include"
- * * SOLUTION: Insert space between lowercase-to-uppercase transitions
+ * 
+ * SOLUTION: Insert space between lowercase-to-uppercase transitions
  * Regex: ([a-z])([A-Z]) captures "nE" and replaces with "n E"
  */
 function repairTextGlue(text) {
@@ -142,11 +157,13 @@ function repairTextGlue(text) {
 
 /**
  * UPLOAD FILE TO SUPABASE STORAGE
- * * FLOW:
+ * 
+ * FLOW:
  * 1. Generate unique filename using timestamp + sanitized original name
  * 2. Upload buffer to 'raw-pdfs' bucket
  * 3. Return public URL for future reference
- * * ERROR HANDLING: Returns null instead of throwing (graceful degradation)
+ * 
+ * ERROR HANDLING: Returns null instead of throwing (graceful degradation)
  */
 async function uploadFileToSupabase(file) {
   if (!supabase) return null;  // Skip if Supabase not configured
@@ -178,12 +195,15 @@ async function uploadFileToSupabase(file) {
 
 /**
  * CREATE JOB RECORD IN DATABASE
- * * PURPOSE: Track analysis jobs in the 'jobs' table
- * * FIELDS:
+ * 
+ * PURPOSE: Track analysis jobs in the 'jobs' table
+ * 
+ * FIELDS:
  * - filename: Original PDF name
  * - file_url: Supabase Storage URL
  * - status: 'PROCESSING' (will become 'COMPLETED' or 'FAILED')
- * * FALLBACK: If Supabase unavailable, creates local ID for tracking
+ * 
+ * FALLBACK: If Supabase unavailable, creates local ID for tracking
  */
 async function createJobRecord(filename, fileUrl) {
   if (!supabase) return { id: 'local-' + Date.now() };
@@ -205,11 +225,14 @@ async function createJobRecord(filename, fileUrl) {
 
 /**
  * COMPLETE JOB RECORD
- * * PURPOSE: Update job status to 'COMPLETED' and store results
- * * DATA STORED:
+ * 
+ * PURPOSE: Update job status to 'COMPLETED' and store results
+ * 
+ * DATA STORED:
  * - result: Full CPDM structure (definitions + rules)
  * - meta: Policy metadata + processing stats
- * * WHY JSONB COLUMNS?
+ * 
+ * WHY JSONB COLUMNS?
  * - PostgreSQL JSONB allows querying nested data
  * - Flexible schema for evolving data structures
  */
@@ -238,7 +261,8 @@ async function completeJobRecord(jobId, result, meta, stats) {
 
 /**
  * GET FIRST NON-EMPTY LINE
- * * WHY?
+ * 
+ * WHY?
  * - First line often contains policy name or title
  * - Used to extract document metadata
  */
@@ -249,7 +273,8 @@ function firstNonEmptyLine(text) {
 
 /**
  * DETECT IF LINE LOOKS LIKE A TITLE
- * * HEURISTICS:
+ * 
+ * HEURISTICS:
  * - Contains pipe separator (|) → common in headers
  * - Contains "UIN:" → Unique Identification Number
  * - Not a section header like "EXCLUSIONS"
@@ -268,7 +293,8 @@ function looksLikeTitleLine(line) {
 
 /**
  * CLEAN INSURER NAME
- * * REMOVES LEGAL BOILERPLATE:
+ * 
+ * REMOVES LEGAL BOILERPLATE:
  * - "Insurer means XYZ" → "XYZ"
  * - "Insurer shall mean ABC" → "ABC"
  */
@@ -283,7 +309,8 @@ function cleanInsurerName(s) {
 
 /**
  * EXTRACT INSURER FROM TEXT
- * * STRATEGY:
+ * 
+ * STRATEGY:
  * - Look in first 3000 characters (where company info usually appears)
  * - Regex captures: "ABC Health Insurance Company Limited"
  * - Falls back to generic "Insurance Company Limited" pattern
@@ -297,7 +324,8 @@ function extractInsurer(text) {
 
 /**
  * EXTRACT POLICY METADATA
- * * EXTRACTS:
+ * 
+ * EXTRACTS:
  * - policy_name: From first line or regex search
  * - insurer: Company name
  * - uin: Unique Identification Number (regulatory requirement in India)
@@ -327,7 +355,8 @@ function extractPolicyMetadata(text) {
 
 /**
  * SECTION HEADERS FOR SEMANTIC SPLITTING
- * * WHY SEMANTIC CHUNKING?
+ * 
+ * WHY SEMANTIC CHUNKING?
  * - Keeps related content together (all exclusions in same chunk)
  * - Improves AI understanding by providing context
  * - Better than arbitrary character splits
@@ -340,11 +369,13 @@ const SECTION_HEADERS = [
 
 /**
  * SPLIT TEXT INTO SEMANTIC SECTIONS
- * * ALGORITHM:
+ * 
+ * ALGORITHM:
  * 1. Find all section headers using regex
  * 2. Split text at these boundaries
  * 3. Keep only substantial sections (>500 chars)
- * * EXAMPLE:
+ * 
+ * EXAMPLE:
  * "...text... EXCLUSIONS ...text... WAITING PERIOD ...text..."
  * → ["...text...", "EXCLUSIONS ...text...", "WAITING PERIOD ...text..."]
  */
@@ -365,11 +396,13 @@ function splitIntoSections(text) {
 
 /**
  * SUB-CHUNK WITH OVERLAP
- * * WHY OVERLAP?
+ * 
+ * WHY OVERLAP?
  * - Prevents splitting sentences in the middle
  * - 100-char overlap ensures context continuity
  * - Example: "...excluded from cov|erage..." → overlap preserves "coverage"
- * * PARAMETERS:
+ * 
+ * PARAMETERS:
  * - size: 1400 chars (optimal for Gemini context window)
  * - overlap: 100 chars (prevents context loss)
  */
@@ -385,12 +418,14 @@ function subChunk(text, size = 1400, overlap = 100) {
 
 /**
  * DETECT STRUCTURAL LINES
- * * IDENTIFIES:
+ * 
+ * IDENTIFIES:
  * - Bullet points (•, -, *)
  * - Numbered lists (1., a), (a), i.)
  * - Table rows (starts with |)
  * - Headers (ends with :)
- * * WHY?
+ * 
+ * WHY?
  * - Structural lines often contain key information
  * - Helps filter out page numbers, footers
  */
@@ -411,14 +446,17 @@ function isStructuralLine(line) {
 
 /**
  * SMART TEXT CLEANING
- * * FILTERS OUT:
+ * 
+ * FILTERS OUT:
  * - Lines with only numbers/symbols (page numbers, decorators)
  * - Very short lines (< 3 chars)
- * * KEEPS:
+ * 
+ * KEEPS:
  * - Structural lines (bullets, numbered lists)
  * - Long lines (> 60 chars, likely to be meaningful)
  * - Lines ending with punctuation (complete sentences)
- * * RETURNS: Cleaned text with filtered lines joined by spaces
+ * 
+ * RETURNS: Cleaned text with filtered lines joined by spaces
  */
 function cleanRuleTextSmart(text) {
   const lines = text.split(/\r?\n/);
@@ -441,16 +479,19 @@ function cleanRuleTextSmart(text) {
 
 /**
  * CREATE SEMANTIC CHUNKS (MAIN CHUNKING FUNCTION)
- * * MULTI-STAGE PROCESS:
+ * 
+ * MULTI-STAGE PROCESS:
  * 1. Split into semantic sections (EXCLUSIONS, DEFINITIONS, etc.)
  * 2. Sub-chunk large sections into 1400-char pieces with overlap
  * 3. Repair text glue ("ExclusionsThe" → "Exclusions The")
  * 4. Clean text (remove junk, keep meaningful content)
  * 5. Classify each chunk (definitions vs rules)
- * * QUALITY FILTERS:
+ * 
+ * QUALITY FILTERS:
  * - Minimum 300 chars (raw) before processing
  * - Minimum 200 chars (cleaned) after processing
- * * RETURNS: Array of chunk objects with:
+ * 
+ * RETURNS: Array of chunk objects with:
  * - id: Sequential number
  * - hint: "definitions", "rules", or "mixed"
  * - raw: Original text
@@ -500,10 +541,12 @@ function createSemanticChunks(text) {
 
 /**
  * DETECT DEFINITION CHUNKS
- * * HEURISTICS:
+ * 
+ * HEURISTICS:
  * - Check first 150 chars for " means " or " is defined as "
  * - Check entire text for "definitions" keyword
- * * WHY FIRST 150 CHARS?
+ * 
+ * WHY FIRST 150 CHARS?
  * - Definitions usually start immediately: "Accident means..."
  * - Avoids false positives from examples later in text
  */
@@ -512,14 +555,16 @@ function isDefinitionChunk(text) {
   const earlyText = t.slice(0, 150);
   
   return earlyText.includes(" means ") || 
-          earlyText.includes(" is defined as ") || 
-          t.includes("definitions");
+         earlyText.includes(" is defined as ") || 
+         t.includes("definitions");
 }
 
 /**
  * DETECT HIGH-SIGNAL RULE CHUNKS
- * * SIGNALS = Keywords indicating insurance rules
- * * WHY IMPORTANT?
+ * 
+ * SIGNALS = Keywords indicating insurance rules
+ * 
+ * WHY IMPORTANT?
  * - These chunks likely contain valuable information
  * - Marked for Pass 2 processing even if Pass 1 succeeds
  * - Ensures we don't miss important rules
@@ -539,14 +584,17 @@ function isHighSignalRuleChunk(text) {
 
 /**
  * CLASSIFY CHUNK BY CONTENT
- * * SCORING SYSTEM:
+ * 
+ * SCORING SYSTEM:
  * - Count occurrences of "means" → definition score
  * - Count occurrences of "cover", "exclude", "limit" → rule score
- * * LOGIC:
+ * 
+ * LOGIC:
  * - If 2+ "means" AND more than rules → "definitions"
  * - If 2+ rule keywords → "rules"
  * - Otherwise → "mixed"
- * * WHY SCORING?
+ * 
+ * WHY SCORING?
  * - Simple keyword presence can be misleading
  * - Frequency-based approach is more reliable
  */
@@ -567,16 +615,19 @@ function classifyChunkHint(text) {
 
 /**
  * SAFE JSON PARSER
- * * PROBLEM: Gemini sometimes adds markdown fences:
+ * 
+ * PROBLEM: Gemini sometimes adds markdown fences:
  * ```json
  * {"type": "exclusion", ...}
  * ```
- * * SOLUTION: Two-stage parsing
+ * 
+ * SOLUTION: Two-stage parsing
  * 1. Remove markdown fences (```json and ```)
  * 2. Try parsing
  * 3. If fails, extract content between first { and last }
  * 4. Try parsing again
- * * RETURNS: Parsed object or null (never throws)
+ * 
+ * RETURNS: Parsed object or null (never throws)
  */
 function safeJsonParse(rawText) {
   if (!rawText) return null;
@@ -608,11 +659,13 @@ function safeJsonParse(rawText) {
 
 /**
  * DETECT JUNK RULES
- * * FILTERS OUT:
+ * 
+ * FILTERS OUT:
  * - Very short text (< 10 chars)
  * - Only numbers and symbols
  * - UI artifacts (like "upload pdf" from PDF rendering glitches)
- * * WHY NEEDED?
+ * 
+ * WHY NEEDED?
  * - PDF extraction can include headers, footers, page numbers
  * - Gemini sometimes returns partial text
  */
@@ -628,11 +681,13 @@ function isJunkRule(text) {
 
 /**
  * VALIDATE DEFINITION PAIRS
- * * CHECKS:
+ * 
+ * CHECKS:
  * - Term is at least 3 chars (avoid "a", "an")
  * - Definition is at least 10 chars (meaningful explanation)
  * - No obvious duplicates (like "accident accident")
- * * RETURNS: true if definition pair is valid
+ * 
+ * RETURNS: true if definition pair is valid
  */
 function isGoodDefinitionPair(term, definition) {
   const t = String(term).trim();
@@ -650,14 +705,17 @@ function isGoodDefinitionPair(term, definition) {
 
 /**
  * GET GEMINI MODEL WITH CONFIGURATION
- * * PARAMETERS:
+ * 
+ * PARAMETERS:
  * - definitionMode: true for definitions, false for rules
  * - maxTokens: Output limit (1024 for Pass 1, 4096 for Pass 2)
- * * MODEL: gemini-2.5-flash
+ * 
+ * MODEL: gemini-2.5-flash
  * - Fast (< 3s per request)
  * - Cost-effective for bulk processing
  * - Sufficient accuracy for structured extraction
- * * TEMPERATURE: 0 (deterministic output)
+ * 
+ * TEMPERATURE: 0 (deterministic output)
  * - No creativity needed, we want consistent JSON
  * - Same input → same output
  */
@@ -673,20 +731,24 @@ function getGeminiModel(definitionMode, maxTokens) {
 
 /**
  * BUILD PROMPT FOR GEMINI
- * * TWO MODES:
+ * 
+ * TWO MODES:
  * 1. DEFINITION MODE:
- * - Single: Extract ONE term-definition pair
- * - Batch: Extract up to 4 definitions
- * * 2. RULE MODE:
- * - Single: Extract ONE rule with category
- * - Batch: Extract up to 4 rules
- * * CATEGORIES (RULES):
+ *    - Single: Extract ONE term-definition pair
+ *    - Batch: Extract up to 4 definitions
+ * 
+ * 2. RULE MODE:
+ *    - Single: Extract ONE rule with category
+ *    - Batch: Extract up to 4 rules
+ * 
+ * CATEGORIES (RULES):
  * - coverage: What IS covered
  * - exclusion: What is NOT covered
  * - waiting_period: Time before coverage starts
  * - financial_limit: Sub-limits, co-pays, deductibles
  * - claim_rejection: Reasons for claim denial
- * * CRITICAL: Always demand "JSON ONLY" to avoid conversational responses
+ * 
+ * CRITICAL: Always demand "JSON ONLY" to avoid conversational responses
  */
 function buildPrompt(mode, text, isBatch = false) {
   // DEFINITION MODE
@@ -708,22 +770,19 @@ function buildPrompt(mode, text, isBatch = false) {
   - "claim_rejection" (Reasons for claim denial, fraud, documentation)`;
 
   if (isBatch) {
-    return `${ruleInstructions}\nExtract up to 4 rules.\nFormat: {"type":"rule_batch","rules":[{"type":"CATEGORY","text":"FULL RULE TEXT"}]}\nTEXT: ${text}`;
-  }
-  return `${ruleInstructions}\nExtract ONE rule. Format: {"type":"CATEGORY","rule":"FULL RULE TEXT"}\nTEXT: ${text}`;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 12: ROUTING & COLLECTION
-// ═══════════════════════════════════════════════════════════════════════════════════════
+    return `${ruleInstructions}\nExtract up to 4 rules.\nFormat: {"type":"rule_batch","rules":[{"type":"CATEGORY","
+// CONTINUATION OF server.js - PART 2
 
 /**
  * ROUTE PARSED JSON TO APPROPRIATE COLLECTION
- * * PURPOSE: Takes Gemini's JSON response and stores data in the right buckets
- * * HANDLES TWO TYPES:
+ * 
+ * PURPOSE: Takes Gemini's JSON response and stores data in the right buckets
+ * 
+ * HANDLES TWO TYPES:
  * 1. Definitions → stored in collected.definitions object
  * 2. Rules → stored in category-specific arrays
- * * RETURNS: { storedAny: boolean } to track if anything was saved
+ * 
+ * RETURNS: { storedAny: boolean } to track if anything was saved
  */
 function routeParsed(parsed, collected) {
   if (!parsed || parsed.type === "none") return { storedAny: false };
@@ -775,12 +834,36 @@ function routeParsed(parsed, collected) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 13: MAIN API ENDPOINT - THE HEART OF THE APPLICATION
+// SECTION 12: MAIN API ENDPOINT - THE HEART OF THE APPLICATION
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 /**
  * POST /upload-pdf
- * * THIS IS THE MAIN ROUTE - ORCHESTRATES ENTIRE ANALYSIS PIPELINE
+ * 
+ * THIS IS THE MAIN ROUTE - ORCHESTRATES ENTIRE ANALYSIS PIPELINE
+ * 
+ * FLOW:
+ * 1. UPLOAD & PERSISTENCE
+ *    - Upload PDF to Supabase Storage
+ *    - Create job record in database
+ * 
+ * 2. PDF PROCESSING
+ *    - Extract raw text from PDF
+ *    - Extract metadata (policy name, insurer, etc.)
+ *    - Create semantic chunks
+ * 
+ * 3. AI PROCESSING (TWO-PASS SYSTEM)
+ *    - Pass 1: Quick scan of all chunks
+ *    - Pass 2: Deep analysis of high-signal chunks
+ * 
+ * 4. DEDUPLICATION & FINALIZATION
+ *    - Remove duplicate rules
+ *    - Build CPDM structure
+ *    - Normalize policy data
+ *    - Save to database
+ * 
+ * 5. RESPONSE
+ *    - Return analysis results to frontend
  */
 app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
   console.log("UPLOAD ENDPOINT HIT");
@@ -796,11 +879,11 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     // ─────────────────────────────────────────────────────────────────────────────────
     console.log("1. Uploading to Storage...");
     const publicUrl = await uploadFileToSupabase(req.file);
-    console.log(`   -> URL: ${publicUrl || "Skipped (Local)"}`);
+    console.log("   -> URL:", publicUrl || "Skipped (Local)");
 
     console.log("2. Creating Job...");
     const job = await createJobRecord(req.file.originalname, publicUrl);
-    console.log(`   -> Job ID: ${job.id}`);
+    console.log("   -> Job ID:", job.id);
 
     // ─────────────────────────────────────────────────────────────────────────────────
     // STEP 2: PDF PROCESSING - Extract Text & Create Chunks
@@ -814,12 +897,33 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     
     // Create semantic chunks (1400 chars each, 100 char overlap)
     const chunks = createSemanticChunks(data.text);
-    console.log(`TOTAL CHUNKS: ${chunks.length}`);
+    console.log('TOTAL CHUNKS: ${chunks.lenght}')
 
     // ─────────────────────────────────────────────────────────────────────────────────
     // STEP 3: INITIALIZE DATA COLLECTION
     // ─────────────────────────────────────────────────────────────────────────────────
     
+    /**
+     * COLLECTED DATA STRUCTURE
+     * 
+     * definitions: Object { term: definition }
+     *   Example: { "Accident": "A sudden, unforeseen..." }
+     * 
+     * coverage: Array of coverage rules
+     *   Example: ["Hospitalization expenses are covered"]
+     * 
+     * exclusions: Array of exclusion rules
+     *   Example: ["War-related injuries are excluded"]
+     * 
+     * waiting_periods: Array of waiting period rules
+     *   Example: ["30-day waiting period for all illnesses"]
+     * 
+     * financial_limits: Array of financial limit rules
+     *   Example: ["Room rent limited to Rs. 5000 per day"]
+     * 
+     * claim_rejection_conditions: Array of claim rejection reasons
+     *   Example: ["Claims without proper documentation will be rejected"]
+     */
     const collected = { 
       definitions: {}, 
       coverage: [], 
@@ -840,10 +944,41 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     // STEP 4: WORKER POOL FUNCTION (Handles Concurrency)
     // ─────────────────────────────────────────────────────────────────────────────────
     
+    /**
+     * WORKER POOL IMPLEMENTATION
+     * 
+     * WHY WORKER POOL?
+     * - Gemini API has rate limits (requests per minute)
+     * - Processing 100 chunks sequentially would take 5+ minutes
+     * - Concurrent processing with 5 workers = much faster
+     * - Avoids overwhelming the API
+     * 
+     * HOW IT WORKS:
+     * - Spawn 5 workers
+     * - Each worker pulls next chunk from queue
+     * - Process until queue empty
+     * - All workers run in parallel
+     * 
+     * PARAMETERS:
+     * - tasks: Array of chunks to process
+     * - concurrency: Number of parallel workers (5 is optimal)
+     * - isPass2: Boolean flag for Pass 2 processing
+     */
     const runWorkerPool = async (tasks, concurrency, isPass2 = false) => {
       let index = 0;  // Shared counter across all workers
       const workers = [];
       
+      /**
+       * WORKER FUNCTION
+       * 
+       * Each worker independently:
+       * 1. Grabs next chunk (thread-safe via index++)
+       * 2. Determines if chunk contains definitions or rules
+       * 3. Calls Gemini with appropriate prompt
+       * 4. Parses JSON response
+       * 5. Routes data to collected buckets
+       * 6. Sleeps 100ms to avoid rate limits
+       */
       const worker = async (id) => {
         while (true) {
           // Atomically get next task
@@ -872,11 +1007,15 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
             
             // DECISION TREE FOR PASS 2 CANDIDATES
             if (!parsed || parsed.type === "none") {
+              // No valid JSON returned
+              
               // If Pass 1 AND (is definition OR has high signals) → needs Pass 2
               if (!isPass2 && (defMode || isHighSignalRuleChunk(task.text))) {
                 pass2Candidates.push(task);
               }
             } else {
+              // Valid JSON returned
+              
               // Store the data
               const { storedAny } = routeParsed(parsed, collected);
               
@@ -910,6 +1049,13 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     // STEP 5: PASS 1 - INITIAL SCAN
     // ─────────────────────────────────────────────────────────────────────────────────
     
+    /**
+     * PASS 1 OBJECTIVES:
+     * - Quickly scan all chunks
+     * - Extract obvious definitions and rules
+     * - Identify chunks needing deeper analysis
+     * - Use low token count (1024) for speed
+     */
     await runWorkerPool(chunks, 5); 
     console.log(`PASS 1 DONE. Candidates for P2: ${pass2Candidates.length}`);
 
@@ -917,6 +1063,18 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     // STEP 6: PASS 2 - DEEP ANALYSIS
     // ─────────────────────────────────────────────────────────────────────────────────
     
+    /**
+     * PASS 2 OBJECTIVES:
+     * - Re-process high-signal chunks
+     * - Use higher token count (4096) for detailed extraction
+     * - Extract complex, multi-part rules
+     * - Catch anything missed in Pass 1
+     * 
+     * CANDIDATES INCLUDE:
+     * - Chunks that failed to return JSON in Pass 1
+     * - Chunks with high-signal keywords
+     * - Definition chunks (they often need more context)
+     */
     if (pass2Candidates.length > 0) {
       // Remove duplicates (same chunk ID)
       const uniqueTasks = [...new Map(pass2Candidates.map(item => [item.id, item])).values()];
@@ -929,6 +1087,16 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     // STEP 7: DEDUPLICATION
     // ─────────────────────────────────────────────────────────────────────────────────
     
+    /**
+     * WHY DEDUPLICATION?
+     * - Overlapping chunks can produce duplicate rules
+     * - Pass 2 may re-extract rules from Pass 1
+     * - Ensures clean, non-redundant output
+     * 
+     * HOW:
+     * - Convert to Set (removes exact duplicates)
+     * - Trim whitespace before comparing
+     */
     const dedup = (arr) => [...new Set(arr.map(s => String(s).trim()))];
     
     collected.coverage = dedup(collected.coverage);
@@ -941,8 +1109,22 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     // STEP 8: BUILD FINAL DATA STRUCTURES
     // ─────────────────────────────────────────────────────────────────────────────────
     
+    /**
+     * CPDM = Comprehensive Policy Data Model
+     * 
+     * STRUCTURE:
+     * {
+     *   meta: { policy_name, insurer, uin, ... },
+     *   definitions: [{ term, definition }, ...],
+     *   rules: [{ category, text }, ...]
+     * }
+     */
     const cpdm = buildCPDM(policyMeta, collected);
     
+    /**
+     * NORMALIZED = Simplified structure for comparison
+     * (See normalizePolicy.js for normalization logic)
+     */
     const normalized = normalizePolicy([{
         coverage: collected.coverage,
         exclusions: collected.exclusions,
@@ -962,6 +1144,17 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     // STEP 10: RETURN RESPONSE
     // ─────────────────────────────────────────────────────────────────────────────────
     
+    /**
+     * RESPONSE STRUCTURE:
+     * 
+     * message: Success indicator
+     * jobId: Database ID for this analysis
+     * fileUrl: Supabase Storage URL
+     * meta: Policy metadata + processing stats
+     * definitions: Extracted term-definition pairs
+     * normalized: Simplified structure
+     * cpdm: Full comprehensive data model
+     */
     res.json({
       message: "Analysis Complete",
       jobId: job.id,
@@ -984,9 +1177,22 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 14: CPDM BUILDER
+// SECTION 13: CPDM BUILDER
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
+/**
+ * BUILD COMPREHENSIVE POLICY DATA MODEL
+ * 
+ * PURPOSE: Convert raw collected data into structured CPDM format
+ * 
+ * TRANSFORMS:
+ * collected.definitions (Object) → definitions array
+ * collected.coverage (Array) → rules with category "coverage"
+ * collected.exclusions (Array) → rules with category "exclusion"
+ * ... and so on
+ * 
+ * RETURNS: Complete CPDM object ready for database storage
+ */
 function buildCPDM(policyMeta, collected) {
   // Convert definitions object to array format
   const definitions = Object.entries(collected.definitions)
@@ -1018,13 +1224,54 @@ function buildCPDM(policyMeta, collected) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 15: START SERVER
+// SECTION 14: START SERVER
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
+/**
+ * LISTEN ON PORT 3000
+ * 
+ * For production (Render), this will be overridden by process.env.PORT
+ * For local development, 3000 is standard
+ */
 app.listen(3000, () => console.log("Server running on 3000"));
 
-/*******************************************************************************************
+/**
  * ═══════════════════════════════════════════════════════════════════════════════════════
  * END OF server.js
  * ═══════════════════════════════════════════════════════════════════════════════════════
- *******************************************************************************************/
+ * 
+ * JUNIOR DEVELOPER NOTES:
+ * 
+ * 1. CRITICAL DEPENDENCIES:
+ *    - pdf-parse: Extracts text from PDFs
+ *    - @google/generative-ai: Gemini AI SDK
+ *    - @supabase/supabase-js: Database & Storage
+ *    - multer: File upload handling
+ * 
+ * 2. ENVIRONMENT VARIABLES REQUIRED:
+ *    - GEMINI_API_KEY: Get from Google AI Studio
+ *    - SUPABASE_URL: Your Supabase project URL
+ *    - SUPABASE_KEY: Your Supabase anon/service key
+ * 
+ * 3. DATABASE SETUP:
+ *    Run the SQL from the handover doc to create the 'jobs' table
+ *    Create a 'raw-pdfs' storage bucket in Supabase
+ * 
+ * 4. TESTING LOCALLY:
+ *    - node server.js
+ *    - Use Postman to POST to http://localhost:3000/upload-pdf
+ *    - Attach a PDF file in form-data with key "pdf"
+ * 
+ * 5. COMMON ISSUES:
+ *    - "Gemini timeout": Increase timeout in withTimeout() function
+ *    - "JSON parse error": Check safeJsonParse() logs, Gemini may be adding text
+ *    - "429 Rate Limit": Increase sleep() delay in worker function
+ *    - "No results": Check if chunks are being classified correctly
+ * 
+ * 6. PERFORMANCE TUNING:
+ *    - Increase concurrency (currently 5) if you have higher rate limits
+ *    - Adjust chunk size (currently 1400) based on your PDFs
+ *    - Modify overlap (currently 100) if you're losing context
+ * 
+ * ═══════════════════════════════════════════════════════════════════════════════════════
+ */
