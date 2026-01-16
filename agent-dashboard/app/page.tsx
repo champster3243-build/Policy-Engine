@@ -1,13 +1,13 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════════════════
- * POLICY ANALYSIS AGENT DASHBOARD - FINAL EXPORT FIX (CSS INJECTION)
+ * POLICY ANALYSIS AGENT DASHBOARD - FINAL EXPORT FIX (ENGINE SWAP)
  * ═══════════════════════════════════════════════════════════════════════════════════════
  * * PURPOSE: Frontend interface for insurance policy analysis
  * * FEATURES:
  * 1. PDF Upload with drag-and-drop
  * 2. Animated progress bar during analysis
  * 3. Categorized results display (Exclusions, Waiting Periods, etc.)
- * 4. PDF Export of analysis results (FIXED: CSS Injection to bypass LAB colors)
+ * 4. PDF Export of analysis results (FIXED: Switched to html-to-image for modern CSS support)
  * 5. Caching indicator (shows if results from library)
  * 6. Statistics dashboard
  * * STATE MANAGEMENT:
@@ -34,7 +34,7 @@ import {
   Info,
   ChevronRight
 } from "lucide-react";
-import html2canvas from "html2canvas";
+import { toPng } from 'html-to-image'; // <--- NEW ENGINE
 import jsPDF from "jspdf";
 
 /**
@@ -108,9 +108,8 @@ export default function AgentDashboard() {
   };
 
   /**
-   * exportPDF - CSS INJECTION FIX
-   * Injects a style block that forces HEX colors for all Tailwind classes used.
-   * This prevents the browser from computing 'lab()' or 'oklch()' colors.
+   * exportPDF - NEW ENGINE: html-to-image
+   * Bypasses the 'lab()' color crash by using SVG serialization instead of manual parsing.
    */
   const exportPDF = async () => {
     const element = document.getElementById("analysis-results");
@@ -120,108 +119,47 @@ export default function AgentDashboard() {
       return;
     }
 
-    console.info("📸 Capturing audit report (Injecting Safe CSS)...");
+    console.info("📸 Capturing audit report...");
     
     try {
-      const canvas = await html2canvas(element, { 
-        scale: 2,           
-        useCORS: true,      
-        logging: false,
-        backgroundColor: "#ffffff",
-        windowWidth: element.scrollWidth,
-        windowHeight: element.scrollHeight,
-        
-        onclone: (clonedDoc) => {
-          const results = clonedDoc.getElementById("analysis-results");
-          if (results) {
-            // 1. Hard reset container
-            results.style.backgroundColor = "#ffffff";
-            results.style.color = "#000000";
-            
-            // 2. CSS INJECTION: Define safe HEX values for every class we use
-            const style = clonedDoc.createElement('style');
-            style.innerHTML = `
-              * { box-shadow: none !important; text-shadow: none !important; }
-              .bg-slate-950 { background-color: #020617 !important; }
-              .bg-slate-900 { background-color: #0f172a !important; }
-              .bg-slate-100 { background-color: #f1f5f9 !important; }
-              .bg-slate-50 { background-color: #f8fafc !important; }
-              .bg-white { background-color: #ffffff !important; }
-              .bg-red-50 { background-color: #fef2f2 !important; }
-              .bg-amber-50 { background-color: #fffbeb !important; }
-              .bg-blue-50 { background-color: #eff6ff !important; }
-              .bg-emerald-50 { background-color: #ecfdf5 !important; }
-              .bg-purple-50 { background-color: #faf5ff !important; }
-              .bg-indigo-600 { background-color: #4f46e5 !important; }
-              .bg-emerald-100 { background-color: #d1fae5 !important; }
-              
-              .text-slate-900 { color: #0f172a !important; }
-              .text-white { color: #ffffff !important; }
-              .text-slate-400 { color: #94a3b8 !important; }
-              .text-slate-500 { color: #64748b !important; }
-              .text-slate-600 { color: #475569 !important; }
-              .text-slate-700 { color: #334155 !important; }
-              .text-indigo-600 { color: #4f46e5 !important; }
-              .text-emerald-700 { color: #047857 !important; }
-              .text-red-950 { color: #450a0a !important; }
-              .text-amber-950 { color: #451a03 !important; }
-              .text-blue-950 { color: #172554 !important; }
-              .text-purple-950 { color: #3b0764 !important; }
-              
-              .border-slate-100 { border-color: #f1f5f9 !important; }
-              .border-slate-200 { border-color: #e2e8f0 !important; }
-              .border-red-100 { border-color: #fee2e2 !important; }
-              .border-amber-100 { border-color: #fef3c7 !important; }
-              .border-blue-100 { border-color: #dbeafe !important; }
-              .border-emerald-100 { border-color: #d1fae5 !important; }
-              .border-purple-100 { border-color: #f3e8ff !important; }
-            `;
-            clonedDoc.head.appendChild(style);
-
-            // 3. Fallback Iteration (Just in case)
-            const allElements = results.querySelectorAll('*');
-            allElements.forEach((el) => {
-               const htmlEl = el as HTMLElement;
-               // If any style still computes to lab/oklch, force it to black/white
-               const computed = window.getComputedStyle(htmlEl);
-               if (computed.backgroundColor.includes('lab') || computed.backgroundColor.includes('oklch')) {
-                   htmlEl.style.backgroundColor = '#ffffff';
-               }
-               if (computed.color.includes('lab') || computed.color.includes('oklch')) {
-                   htmlEl.style.color = '#000000';
-               }
-               if (computed.borderColor.includes('lab') || computed.borderColor.includes('oklch')) {
-                   htmlEl.style.borderColor = '#e2e8f0';
-               }
-            });
-          }
-        }
+      // 1. Generate High-Quality PNG using html-to-image
+      const dataUrl = await toPng(element, { 
+        cacheBust: true, 
+        backgroundColor: '#ffffff', // Force white background
+        quality: 0.95,              // High JPEG/PNG quality
+        pixelRatio: 2               // 2x scale for Retina sharpness
       });
 
+      // 2. Initialize PDF
       const pdf = new jsPDF("p", "mm", "a4");
-      const imgWidth = 210; 
-      const pageHeight = 297; 
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      const imgProps = pdf.getImageProperties(dataUrl);
+      
+      const pdfWidth = 210; // A4 width
+      const pageHeight = 297; // A4 height
+      const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
       
       let heightLeft = imgHeight;
       let position = 0;
-      const imgData = canvas.toDataURL("image/png");
 
-      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+      // 3. Add First Page
+      pdf.addImage(dataUrl, 'PNG', 0, position, pdfWidth, imgHeight);
       heightLeft -= pageHeight;
 
+      // 4. Multi-page Logic (Slice image if it's too long)
       while (heightLeft >= 0) {
         position = heightLeft - imgHeight;
         pdf.addPage();
-        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+        pdf.addImage(dataUrl, 'PNG', 0, position, pdfWidth, imgHeight);
         heightLeft -= pageHeight;
       }
       
+      // 5. Save File
       pdf.save(`Audit-Report-${data?.meta?.policy_name || "Policy"}.pdf`);
       console.info("✅ Export successful");
+
     } catch (error) {
       console.error("❌ Export failed:", error);
-      alert("Export Error: Browser color incompatibility. Please try Chrome/Edge.");
+      alert("Export failed. Please check console for details.");
     }
   };
 
@@ -352,7 +290,7 @@ export default function AgentDashboard() {
                   </button>
                 </div>
 
-                {/* THIS DIV IS CAPTURED BY HTML2CANVAS */}
+                {/* THIS DIV IS CAPTURED BY HTML-TO-IMAGE */}
                 <div id="analysis-results" className="space-y-8 bg-white p-12 rounded-3xl border border-slate-200 shadow-xl">
                   
                   {/* Report Header */}
@@ -516,66 +454,66 @@ export default function AgentDashboard() {
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 interface StatCardProps {
-  icon: React.ReactNode;
-  label: string;
-  value: number;
-  color: "red" | "amber" | "blue" | "emerald" | "purple" | "slate";
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  color: "red" | "amber" | "blue" | "emerald" | "purple" | "slate";
 }
 
 function StatCard({ icon, label, value, color }: StatCardProps) {
-  const colorMap = {
-    red: "bg-red-50 text-red-700 border-red-100 ring-red-100",
-    amber: "bg-amber-50 text-amber-700 border-amber-100 ring-amber-100",
-    blue: "bg-blue-50 text-blue-700 border-blue-100 ring-blue-100",
-    emerald: "bg-emerald-50 text-emerald-700 border-emerald-100 ring-emerald-100",
-    purple: "bg-purple-50 text-purple-700 border-purple-100 ring-purple-100",
-    slate: "bg-slate-50 text-slate-700 border-slate-200 ring-slate-100"
-  };
+  const colorMap = {
+    red: "bg-red-50 text-red-700 border-red-100 ring-red-100",
+    amber: "bg-amber-50 text-amber-700 border-amber-100 ring-amber-100",
+    blue: "bg-blue-50 text-blue-700 border-blue-100 ring-blue-100",
+    emerald: "bg-emerald-50 text-emerald-700 border-emerald-100 ring-emerald-100",
+    purple: "bg-purple-50 text-purple-700 border-purple-100 ring-purple-100",
+    slate: "bg-slate-50 text-slate-700 border-slate-200 ring-slate-100"
+  };
 
-  return (
-    <div className={`${colorMap[color]} p-5 rounded-2xl border hover:ring-4 transition-all duration-300 cursor-default group`}>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="opacity-70 group-hover:scale-110 transition-transform">{icon}</div>
-        <span className="text-[10px] font-black uppercase tracking-widest opacity-70">{label}</span>
-      </div>
-      <div className="text-4xl font-black tracking-tighter">{value}</div>
-    </div>
-  );
+  return (
+    <div className={`${colorMap[color]} p-5 rounded-2xl border hover:ring-4 transition-all duration-300 cursor-default group`}>
+      <div className="flex items-center gap-2 mb-3">
+        <div className="opacity-70 group-hover:scale-110 transition-transform">{icon}</div>
+        <span className="text-[10px] font-black uppercase tracking-widest opacity-70">{label}</span>
+      </div>
+      <div className="text-4xl font-black tracking-tighter">{value}</div>
+    </div>
+  );
 }
 
 interface RuleSectionProps {
-  title: string;
-  subtitle: string;
-  rules: Rule[];
-  accentColor: string;
-  bgColor: string;
-  textColor: string;
-  borderColor: string;
+  title: string;
+  subtitle: string;
+  rules: Rule[];
+  accentColor: string;
+  bgColor: string;
+  textColor: string;
+  borderColor: string;
 }
 
 function RuleSection({ title, subtitle, rules, accentColor, bgColor, textColor, borderColor }: RuleSectionProps) {
-  if (rules.length === 0) return null;
+  if (rules.length === 0) return null;
 
-  return (
-    <div className="group">
-      <div className="flex items-start gap-4 mb-6">
-         <div className={`w-1.5 h-12 ${accentColor} rounded-full mt-1 shrink-0`}></div>
-         <div>
-            <h3 className="text-xl font-black text-slate-900 tracking-tight">{title}</h3>
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mt-1">{subtitle}</p>
-         </div>
-      </div>
-      <ul className="grid grid-cols-1 gap-3 pl-6">
-        {rules.map((item, i) => (
-          <li 
-            key={i} 
-            className={`${bgColor} ${textColor} border ${borderColor} p-5 rounded-xl text-[13px] font-bold leading-relaxed flex gap-4 items-start hover:shadow-md transition-all`}
-          >
-            <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 opacity-50" />
-            {item.text}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
+  return (
+    <div className="group">
+      <div className="flex items-start gap-4 mb-6">
+         <div className={`w-1.5 h-12 ${accentColor} rounded-full mt-1 shrink-0`}></div>
+         <div>
+            <h3 className="text-xl font-black text-slate-900 tracking-tight">{title}</h3>
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mt-1">{subtitle}</p>
+         </div>
+      </div>
+      <ul className="grid grid-cols-1 gap-3 pl-6">
+        {rules.map((item, i) => (
+          <li 
+            key={i} 
+            className={`${bgColor} ${textColor} border ${borderColor} p-5 rounded-xl text-[13px] font-bold leading-relaxed flex gap-4 items-start hover:shadow-md transition-all`}
+          >
+            <ChevronRight className="w-4 h-4 mt-0.5 shrink-0 opacity-50" />
+            {item.text}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
