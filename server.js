@@ -379,14 +379,22 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     }
 
     // --- 1. PERSISTENCE ---
+    console.log("1. Uploading raw PDF to Supabase...");
     const publicUrl = await uploadFileToSupabase(req.file);
+    console.log("   -> Raw URL:", publicUrl);
+
+    console.log("2. Creating database record...");
     const job = await createJobRecord(req.file.originalname, publicUrl);
+    console.log("   -> Record ID:", job.id);
 
     // --- 2. PROCESSING ---
+    console.log("3. Parsing PDF text...");
     const data = await pdf(req.file.buffer);
     const policyMeta = extractPolicyMetadata(data.text);
+    console.log("   -> Metadata extracted:", policyMeta.policy_name);
+    
     const chunks = createSemanticChunks(data.text);
-    console.log(`TOTAL CHUNKS: ${chunks.length}`);
+    console.log(`TOTAL SEMANTIC CHUNKS GENERATED: ${chunks.length}`);
 
     const collected = { definitions: {}, coverage: [], exclusions: [], waiting_periods: [], financial_limits: [], claim_rejection_conditions: [] };
     let parsedChunks = 0, failedChunks = 0;
@@ -416,6 +424,7 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
               if (!isPass2 && storedAny && isHighSignalRuleChunk(task.text)) pass2Candidates.push(task);
             }
           } catch (e) {
+            console.error(`[Worker ${id}] Chunk Failed:`, e.message);
             failedChunks++;
           }
           await sleep(50);
@@ -425,16 +434,18 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
       await Promise.all(workers);
     };
 
+    console.log("4. Starting Worker Pool (Pass 1)...");
     await runWorkerPool(chunks, 5); 
-    console.log(`PASS 1 DONE. Candidates for P2: ${pass2Candidates.length}`);
+    console.log(`PASS 1 DONE. Success: ${parsedChunks}, Fail: ${failedChunks}, Candidates for P2: ${pass2Candidates.length}`);
 
     if (pass2Candidates.length > 0) {
       const uniqueTasks = [...new Map(pass2Candidates.map(item => [item.id, item])).values()];
-      console.log(`STARTING PASS 2 with ${uniqueTasks.length} chunks...`);
+      console.log(`5. Starting High-Intensity Pass 2 with ${uniqueTasks.length} candidates...`);
       await runWorkerPool(uniqueTasks, 5, true);
     }
 
     // --- 3. FINALIZE ---
+    console.log("6. Finalizing and Deduplicating Rules...");
     const dedup = (arr) => [...new Set(arr.map(s => String(s).trim()))];
     collected.coverage = dedup(collected.coverage);
     collected.exclusions = dedup(collected.exclusions);
@@ -442,6 +453,7 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     collected.financial_limits = dedup(collected.financial_limits);
     collected.claim_rejection_conditions = dedup(collected.claim_rejection_conditions);
 
+    console.log("7. Normalizing Policy Structure...");
     const cpdm = buildCPDM(policyMeta, collected);
     const normalized = normalizePolicy([{
         coverage: collected.coverage,
@@ -452,7 +464,9 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     }]);
 
     // --- 4. SAVE RESULT ---
+    console.log("8. Saving final result to database...");
     await completeJobRecord(job.id, { cpdm, normalized, definitions: collected.definitions }, policyMeta, { parsedChunks, failedChunks });
+    console.log("🚀 JOB COMPLETE.");
 
     res.json({
       message: "Analysis Complete",
@@ -465,7 +479,7 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     });
 
   } catch (e) {
-    console.error(e);
+    console.error("⛔ EXTREME FAILURE:", e.stack);
     res.status(500).json({ error: e.message });
   }
 });
@@ -482,4 +496,4 @@ function buildCPDM(policyMeta, collected) {
   return { meta: policyMeta, definitions, rules };
 }
 
-app.listen(3000, () => console.log("Server running on 3000"));
+app.listen(3000, () => console.log("Server running on port 3000. Listening for PDF audits..."));

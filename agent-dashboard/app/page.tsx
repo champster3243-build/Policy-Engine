@@ -13,17 +13,30 @@ export default function AgentDashboard() {
 
   const handleUpload = async () => {
     if (!file) return;
+    console.info("🚀 Initiating upload for:", file.name);
     setLoading(true);
     setData(null);
     const formData = new FormData();
     formData.append("pdf", file);
 
     try {
+      console.log("📡 Sending request to backend...");
       const res = await fetch(`${API_URL}/upload-pdf`, { method: "POST", body: formData });
+      
+      if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+      
       const result = await res.json();
-      console.log("API Response:", result); // Diagnostic
+      console.log("✅ API Response Received:", result); // Diagnostic
+      
+      if (result.isCached) {
+        console.info("♻️ Cache Hit: Data retrieved from library.");
+      } else {
+        console.info("🧠 Analysis Complete: Chunks processed:", result.meta?.parsedChunks);
+      }
+      
       setData(result);
-    } catch (e) { 
+    } catch (e: any) { 
+      console.error("❌ Analysis failed:", e.message);
       alert("Analysis failed."); 
     } finally { 
       setLoading(false); 
@@ -33,11 +46,13 @@ export default function AgentDashboard() {
   const exportPDF = async () => {
     const element = document.getElementById("analysis-results");
     if (!element) return;
+    console.log("📸 Generating PDF snapshot...");
     const canvas = await html2canvas(element, { scale: 2, useCORS: true });
     const imgData = canvas.toDataURL("image/png");
     const pdf = new jsPDF("p", "mm", "a4");
     pdf.addImage(imgData, "PNG", 0, 0, 210, (canvas.height * 210) / canvas.width);
     pdf.save(`Audit-Report.pdf`);
+    console.info("💾 Report saved successfully.");
   };
 
   return (
