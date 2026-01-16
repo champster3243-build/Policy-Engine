@@ -7,7 +7,7 @@
  * 1. PDF Upload with drag-and-drop
  * 2. Animated progress bar during analysis
  * 3. Categorized results display (Exclusions, Waiting Periods, etc.)
- * 4. PDF Export of analysis results (FIXED: Full container capture)
+ * 4. PDF Export of analysis results (FIXED: Lab colors & Multi-page capture)
  * 5. Caching indicator (shows if results from library)
  * 6. Statistics dashboard
  * * STATE MANAGEMENT:
@@ -108,7 +108,7 @@ export default function AgentDashboard() {
 
   /**
    * exportPDF - FIXED version
-   * Added scroll height awareness and window.devicePixelRatio adjustment
+   * Fixes "lab" color error by using a cloned document with fallback colors
    */
   const exportPDF = async () => {
     const element = document.getElementById("analysis-results");
@@ -118,33 +118,46 @@ export default function AgentDashboard() {
       return;
     }
 
-    console.info("📸 Capturing audit report...");
+    console.info("📸 Capturing audit report (Safe Color Mode)...");
     
     try {
-      // Use window.scrollTo(0,0) or capture with scroll options to ensure full height
       const canvas = await html2canvas(element, { 
         scale: 2,           
         useCORS: true,      
         logging: false,
-        backgroundColor: "#ffffff", // Ensure white background in PDF
-        windowWidth: element.scrollWidth,
-        windowHeight: element.scrollHeight
+        backgroundColor: "#ffffff",
+        // CRITICAL FIX: Replace lab/oklch colors in clone before rendering
+        onclone: (clonedDoc) => {
+          const results = clonedDoc.getElementById("analysis-results");
+          if (results) {
+            results.style.backgroundColor = "#ffffff";
+            const allElements = results.getElementsByTagName("*");
+            for (let i = 0; i < allElements.length; i++) {
+              const el = allElements[i] as HTMLElement;
+              // Force standard RGB fallbacks for cards
+              if (el.classList.contains('bg-red-50')) el.style.backgroundColor = "#fef2f2";
+              if (el.classList.contains('bg-yellow-50')) el.style.backgroundColor = "#fefce8";
+              if (el.classList.contains('bg-orange-50')) el.style.backgroundColor = "#fff7ed";
+              if (el.classList.contains('bg-purple-50')) el.style.backgroundColor = "#faf5ff";
+            }
+          }
+        }
       });
 
       const pdf = new jsPDF("p", "mm", "a4");
-      const imgWidth = 210; // A4 width in mm
-      const pageHeight = 297; // A4 height in mm
+      const imgWidth = 210; 
+      const pageHeight = 295; 
       const imgHeight = (canvas.height * imgWidth) / canvas.width;
       
       let heightLeft = imgHeight;
       let position = 0;
       const imgData = canvas.toDataURL("image/png");
 
-      // Add first page
+      // Page 1
       pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
       heightLeft -= pageHeight;
 
-      // Handle multi-page PDF if content is long
+      // Handle multi-page if content overflows A4
       while (heightLeft >= 0) {
         position = heightLeft - imgHeight;
         pdf.addPage();
@@ -156,6 +169,7 @@ export default function AgentDashboard() {
       console.info("✅ Export successful");
     } catch (error) {
       console.error("❌ Export failed:", error);
+      alert("PDF Export failed. Check console for details.");
     }
   };
 
@@ -176,7 +190,7 @@ export default function AgentDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 p-8 text-slate-900">
+    <div className="min-h-screen bg-slate-100 p-8 text-slate-950 leading-relaxed">
       <div className="max-w-6xl mx-auto space-y-8">
         
         {/* HEADER SECTION */}
@@ -186,7 +200,7 @@ export default function AgentDashboard() {
               <Shield className="w-8 h-8 text-white"/> 
             </div>
             <div>
-              <h1 className="text-3xl font-black tracking-tight">Agent Command Center</h1>
+              <h1 className="text-3xl font-black tracking-tight uppercase tracking-tighter">Agent Command Center</h1>
               <p className="text-slate-400 text-sm font-medium">Policy Audit & Compliance Intelligence</p>
             </div>
           </div>
@@ -198,13 +212,12 @@ export default function AgentDashboard() {
           )}
         </div>
 
-        {/* MAIN CONTENT GRID */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           
           {/* LEFT COLUMN: UPLOAD CONTROLS */}
           <div className="space-y-6">
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
-              <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 flex items-center gap-2">
+              <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 flex items-center gap-2">
                 <Activity className="w-3 h-3" /> Input Controls
               </h2>
               
@@ -218,131 +231,66 @@ export default function AgentDashboard() {
                   }} 
                   className="absolute inset-0 opacity-0 cursor-pointer" 
                 />
-                
-                <div className="bg-slate-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
-                  <FileText className="text-slate-400 w-8 h-8" />
-                </div>
-                <p className="text-sm font-bold text-slate-700">
-                  {file ? file.name : "Drop policy PDF here"}
-                </p>
-                <p className="text-[10px] uppercase font-black text-slate-400 mt-2 tracking-widest">
-                  {file ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : "Max 10MB"}
-                </p>
+                <FileText className="mx-auto text-slate-300 w-12 h-12 mb-2 group-hover:scale-110 transition-transform" />
+                <p className="text-sm font-bold text-slate-700">{file ? file.name : "Select Policy PDF"}</p>
               </div>
-              
+
               {loading && (
-                <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
-                  <div className="flex justify-between items-center mb-1">
-                     <span className="text-[10px] uppercase font-black text-blue-600 animate-pulse">Scanning Document...</span>
-                  </div>
-                  <div className="bg-slate-200 h-2 rounded-full overflow-hidden">
+                <div className="space-y-2">
+                  <div className="bg-slate-100 h-2 rounded-full overflow-hidden">
                     <div className="bg-blue-600 h-full animate-[loading_10s_ease-in-out_infinite] origin-left"></div>
                   </div>
+                  <p className="text-[10px] text-center text-slate-500 font-black uppercase">Analyzing Chunks...</p>
                 </div>
               )}
-              
+
               <button 
                 onClick={handleUpload} 
                 disabled={loading || !file}
-                className="w-full bg-slate-900 text-white font-black py-4 rounded-xl uppercase text-[11px] tracking-[0.2em] hover:bg-blue-600 transition-all shadow-lg active:scale-95 disabled:bg-slate-100 disabled:text-slate-400 flex items-center justify-center gap-2"
+                className="w-full bg-slate-900 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-600 transition-all shadow-lg active:scale-95 disabled:bg-slate-100 disabled:text-slate-400 flex items-center justify-center gap-2"
               >
                 {loading ? <Loader2 className="animate-spin w-4 h-4"/> : <Upload className="w-4 h-4"/>}
-                {loading ? "Processing Engine..." : "Analyze Competitor Policy"}
+                Run Deep Audit
               </button>
             </div>
-
-            {data?.meta && (
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">
-                  Metadata Intelligence
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                   <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                      <p className="text-[10px] text-slate-400 uppercase font-bold">Chunks</p>
-                      <p className="text-lg font-black">{data.meta.totalChunks}</p>
-                   </div>
-                   <div className="bg-emerald-50 p-3 rounded-lg border border-emerald-100">
-                      <p className="text-[10px] text-emerald-600 uppercase font-bold">Success</p>
-                      <p className="text-lg font-black text-emerald-700">{data.meta.parsedChunks}</p>
-                   </div>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* RIGHT COLUMN: ANALYSIS RESULTS */}
           <div className="lg:col-span-2 space-y-4">
-            {data && (
+            {data ? (
               <>
                 <div className="flex justify-end">
                   <button 
                     onClick={exportPDF} 
-                    className="bg-blue-600 text-white px-6 py-3 rounded-xl text-[11px] font-black uppercase tracking-[0.2em] flex items-center gap-2 hover:bg-slate-900 transition-all shadow-lg shadow-blue-500/20"
+                    className="bg-blue-600 text-white px-6 py-3 rounded-xl text-[11px] font-black uppercase tracking-[0.2em] flex items-center gap-2 hover:bg-slate-900 transition-all shadow-lg"
                   >
-                    <Download className="w-4 h-4"/> 
-                    Download Audit Report
+                    <Download className="w-4 h-4"/> Export Audit PDF
                   </button>
                 </div>
 
                 <div id="analysis-results" className="space-y-6 bg-white p-10 rounded-3xl border border-slate-200 shadow-xl">
-                  
-                  {/* Policy Header */}
+                  {/* Header */}
                   <div className="border-b-4 border-slate-900 pb-6 mb-8">
-                    <div className="flex items-center gap-3 mb-2">
-                       <CheckCircle className="w-5 h-5 text-emerald-500" />
-                       <span className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Analysis Output</span>
-                    </div>
-                    <h2 className="text-4xl font-black text-slate-900 leading-tight">
+                    <h2 className="text-4xl font-black text-slate-900 tracking-tight">
                       {data.cpdm?.meta?.policy_name || data.meta?.policy_name || "Policy Analysis"}
                     </h2>
-                    <div className="mt-4 flex flex-wrap gap-4">
-                        <span className="bg-slate-100 px-3 py-1 rounded text-[10px] font-bold text-slate-600 uppercase">{data.cpdm?.meta?.insurer || "Unknown Insurer"}</span>
-                        {data.cpdm?.meta?.uin && <span className="bg-slate-100 px-3 py-1 rounded text-[10px] font-bold text-slate-600 uppercase">UIN: {data.cpdm.meta.uin}</span>}
-                    </div>
+                    <p className="text-sm text-slate-600 font-black uppercase tracking-widest mt-2">
+                      {data.cpdm?.meta?.insurer || "Standard Insurer"}
+                    </p>
                   </div>
 
-                  {/* Statistics Dashboard */}
+                  {/* Stats Grid */}
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8">
                     {(() => {
                       const stats = getStats();
                       return (
                         <>
-                          <StatCard 
-                            icon={<XCircle className="w-5 h-5" />}
-                            label="Exclusions"
-                            value={stats.exclusions}
-                            color="red"
-                          />
-                          <StatCard 
-                            icon={<Clock className="w-5 h-5" />}
-                            label="Waiting"
-                            value={stats.waitingPeriods}
-                            color="yellow"
-                          />
-                          <StatCard 
-                            icon={<DollarSign className="w-5 h-5" />}
-                            label="Limits"
-                            value={stats.financialLimits}
-                            color="orange"
-                          />
-                          <StatCard 
-                            icon={<CheckCircle className="w-5 h-5" />}
-                            label="Covered"
-                            value={stats.coverage}
-                            color="green"
-                          />
-                          <StatCard 
-                            icon={<AlertTriangle className="w-5 h-5" />}
-                            label="Claim Risks"
-                            value={stats.claimRejection}
-                            color="purple"
-                          />
-                          <StatCard 
-                            icon={<Info className="w-5 h-5" />}
-                            label="Rules"
-                            value={stats.total}
-                            color="blue"
-                          />
+                          <StatCard icon={<XCircle className="w-5 h-5" />} label="Exclusions" value={stats.exclusions} color="red" />
+                          <StatCard icon={<Clock className="w-5 h-5" />} label="Waiting" value={stats.waitingPeriods} color="yellow" />
+                          <StatCard icon={<DollarSign className="w-5 h-5" />} label="Limits" value={stats.financialLimits} color="orange" />
+                          <StatCard icon={<CheckCircle className="w-5 h-5" />} label="Covered" value={stats.coverage} color="green" />
+                          <StatCard icon={<AlertTriangle className="w-5 h-5" />} label="Risks" value={stats.claimRejection} color="purple" />
+                          <StatCard icon={<Info className="w-5 h-5" />} label="Rules" value={stats.total} color="blue" />
                         </>
                       );
                     })()}
@@ -351,7 +299,7 @@ export default function AgentDashboard() {
                   <div className="space-y-10">
                     <RuleSection
                       title="Permanent Exclusions"
-                      subtitle="Items explicitly removed from coverage scope"
+                      subtitle="Explicitly removed from coverage scope"
                       rules={getRulesByCategory("exclusion")}
                       accentColor="bg-red-600"
                       bgColor="bg-red-50"
@@ -360,7 +308,7 @@ export default function AgentDashboard() {
 
                     <RuleSection
                       title="Waiting Periods"
-                      subtitle="Temporal requirements before claim eligibility"
+                      subtitle="Temporal requirements before eligibility"
                       rules={getRulesByCategory("waiting_period")}
                       accentColor="bg-yellow-500"
                       bgColor="bg-yellow-50"
@@ -376,25 +324,16 @@ export default function AgentDashboard() {
                       textColor="text-orange-950"
                     />
 
-                    <RuleSection
-                      title="Claim Rejection Risks"
-                      subtitle="Process gaps that may lead to claim denial"
-                      rules={getRulesByCategory("claim_rejection")}
-                      accentColor="bg-purple-600"
-                      bgColor="bg-purple-50"
-                      textColor="text-purple-950"
-                    />
-
                     {data.cpdm?.definitions && data.cpdm.definitions.length > 0 && (
                       <div className="pt-8 border-t border-slate-100">
                         <h3 className="font-black text-[11px] uppercase tracking-[0.2em] text-slate-400 mb-6 flex items-center gap-2">
-                           <FileText className="w-4 h-4" /> Comprehensive Definitions
+                           <FileText className="w-4 h-4" /> Definitions Catalog
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           {data.cpdm.definitions.map((def, i) => (
                             <div key={i} className="bg-slate-50 p-4 rounded-xl border border-slate-100">
                               <dt className="font-black text-[10px] uppercase tracking-wider text-blue-700 mb-1">{def.term}</dt>
-                              <dd className="text-xs text-slate-700 font-medium leading-relaxed">{def.definition}</dd>
+                              <dd className="text-xs text-slate-900 font-bold leading-relaxed">{def.definition}</dd>
                             </div>
                           ))}
                         </div>
@@ -403,19 +342,10 @@ export default function AgentDashboard() {
                   </div>
                 </div>
               </>
-            )}
-
-            {!data && !loading && (
-              <div className="bg-white p-24 rounded-3xl border-4 border-dashed border-slate-100 text-center">
-                <div className="bg-slate-50 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6">
-                  <Shield className="w-10 h-10 text-slate-200" />
-                </div>
-                <h3 className="text-2xl font-black text-slate-300 mb-2 uppercase tracking-tighter">
-                  Analysis Engine Idle
-                </h3>
-                <p className="text-sm font-medium text-slate-400">
-                  Awaiting competitor policy upload for processing
-                </p>
+            ) : (
+              <div className="h-full min-h-[500px] flex flex-col items-center justify-center bg-white/50 border-4 border-dashed border-slate-200 rounded-3xl text-slate-300">
+                <Shield className="w-20 h-20 mb-4 opacity-10" />
+                <p className="text-xs font-black uppercase tracking-[0.2em]">Engine Idle - Awaiting Audit Input</p>
               </div>
             )}
           </div>
@@ -459,7 +389,7 @@ function StatCard({ icon, label, value, color }: StatCardProps) {
         <div className="opacity-50">{icon}</div>
         <span className="text-[10px] font-black uppercase tracking-widest">{label}</span>
       </div>
-      <div className="text-3xl font-black tracking-tighter">{value}</div>
+      <div className="text-3xl font-black">{value}</div>
     </div>
   );
 }
@@ -477,14 +407,12 @@ function RuleSection({ title, subtitle, rules, accentColor, bgColor, textColor }
   if (rules.length === 0) return null;
 
   return (
-    <div className="group">
+    <div>
       <div className="flex items-center gap-4 mb-4">
          <div className={`w-2 h-8 ${accentColor} rounded-full`}></div>
          <div>
-            <h3 className="text-lg font-black text-slate-900 tracking-tight">
-              {title}
-            </h3>
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">{subtitle}</p>
+            <h3 className="text-lg font-black text-slate-900 tracking-tight">{title}</h3>
+            <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">{subtitle}</p>
          </div>
       </div>
       <ul className="grid grid-cols-1 gap-3">
