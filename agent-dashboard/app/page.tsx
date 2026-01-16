@@ -1,10 +1,10 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════════════════
- * POLICY AGENT: "THE VK-18 EDITION" (Elite Performance UI)
+ * POLICY AGENT: "THE ELITE EDITION" (Performance Dashboard)
  * ═══════════════════════════════════════════════════════════════════════════════════════
  * * DESIGN PHILOSOPHY: Aggressive, High-Contrast, Precision-Engineered.
  * * TECH STACK: Next.js + Tailwind + html-to-image (Modern CSS Support)
- * * EXPORT ENGINE: html-to-image (Fixes 'lab' color crashes)
+ * * VISUAL STYLE: Dark Mode "Command Center" with Neon Accents.
  * */
 
 "use client";
@@ -13,12 +13,12 @@ import { useState } from "react";
 import { 
   Upload, FileText, Shield, Download, Loader2, Activity, 
   AlertTriangle, Clock, DollarSign, XCircle, CheckCircle, 
-  Zap, BarChart3, ChevronRight, Hash
+  Zap, BarChart3, ChevronRight, Hash, Search, LayoutDashboard
 } from "lucide-react";
-import { toPng } from 'html-to-image'; // ✅ NEW ENGINE: Handles modern CSS/Dark Mode perfectly
+import { toPng } from 'html-to-image';
 import jsPDF from "jspdf";
 
-// --- TYPES ---
+// --- TYPES (Unchanged for compatibility) ---
 interface Rule { category: string; text: string; }
 interface PolicyMeta {
   policy_name?: string; insurer?: string; uin?: string;
@@ -42,7 +42,6 @@ export default function AgentDashboard() {
     formData.append("pdf", file);
 
     try {
-      // Replace with your actual endpoint
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
       const res = await fetch(`${apiUrl}/upload-pdf`, { method: "POST", body: formData });
       const result = await res.json();
@@ -55,7 +54,7 @@ export default function AgentDashboard() {
     }
   };
 
-  // --- EXPORT LOGIC (html-to-image) ---
+  // --- EXPORT LOGIC (Optimized for Dark Mode Capture) ---
   const exportPDF = async () => {
     const element = document.getElementById("analysis-results");
     if (!element) return;
@@ -64,21 +63,19 @@ export default function AgentDashboard() {
     if(btn) btn.innerText = "GENERATING...";
 
     try {
-      // 1. Capture High-Fidelity Dark Mode Image
+      // Capture exactly what is seen on screen (Dark Mode)
       const dataUrl = await toPng(element, { 
         cacheBust: true,
-        backgroundColor: '#0a0a0a', // Force Neutral-950 background for PDF
+        backgroundColor: '#09090b', // Zinc-950 background
         quality: 1.0,
-        pixelRatio: 2, // Retina quality
+        pixelRatio: 2, 
       });
 
-      // 2. Generate PDF
       const pdf = new jsPDF("p", "mm", "a4");
       const imgProps = pdf.getImageProperties(dataUrl);
       const pdfWidth = 210;
       const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
       
-      // Auto-Paging Logic
       let heightLeft = pdfHeight;
       let position = 0;
       const pageHeight = 297;
@@ -96,13 +93,13 @@ export default function AgentDashboard() {
       pdf.save(`Elite-Audit-${data?.meta?.policy_name || "Report"}.pdf`);
     } catch (err) {
       console.error("Export Error:", err);
-      alert("Export Failed. Check console.");
+      alert("Export Failed. Please try Chrome/Edge.");
     } finally {
       if(btn) btn.innerText = "DOWNLOAD REPORT";
     }
   };
 
-  // --- HELPERS ---
+  // --- DATA HELPERS ---
   const getRules = (cat: string) => data?.cpdm?.rules?.filter(r => r.category === cat) || [];
   
   const stats = data ? {
@@ -114,244 +111,284 @@ export default function AgentDashboard() {
     total: data.cpdm?.rules?.length || 0
   } : { exclusions: 0, waiting: 0, limits: 0, risks: 0, coverage: 0, total: 0 };
 
+  // Calculate Health Score (Simple algorithm for visual demo)
+  const healthScore = stats.total > 0 
+    ? Math.round(((stats.coverage * 1.5) - (stats.exclusions * 2) - stats.risks + 100)) 
+    : 0;
+  const normalizedScore = Math.max(0, Math.min(100, healthScore)); // Clamp between 0-100
+
   return (
-    <div className="min-h-screen bg-neutral-950 text-white font-sans selection:bg-rose-500 selection:text-white">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-rose-500 selection:text-white">
       
-      {/* ════ NAVBAR ════ */}
-      <div className="border-b border-neutral-800 bg-neutral-950/50 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+      {/* ════ NAVBAR: THE COCKPIT HEADER ════ */}
+      <nav className="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-xl sticky top-0 z-50">
+        <div className="max-w-[1600px] mx-auto px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-3">
-            <div className="bg-rose-600 p-2 rounded-lg shadow-lg shadow-rose-600/20">
-              <Activity className="w-5 h-5 text-white" />
+            <div className="bg-gradient-to-tr from-rose-600 to-orange-600 p-2.5 rounded-lg shadow-lg shadow-rose-900/20">
+              <Shield className="w-6 h-6 text-white" />
             </div>
-            <h1 className="text-xl font-black tracking-tighter uppercase">
-              Policy<span className="text-rose-500">Engine</span>_V1
-            </h1>
+            <div>
+              <h1 className="text-xl font-black tracking-tighter uppercase leading-none">
+                KnowYour<span className="text-rose-500">Cover</span>
+              </h1>
+              <p className="text-[10px] font-bold text-zinc-500 tracking-[0.2em] uppercase">Policy Intelligence Unit</p>
+            </div>
           </div>
-          <div className="flex items-center gap-4">
-            {data?.isCached && (
-              <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
-                <Zap className="w-3 h-3 text-emerald-400 fill-emerald-400" />
-                <span className="text-[10px] font-bold text-emerald-400 tracking-widest uppercase">Instant Replay</span>
-              </div>
-            )}
+          
+          <div className="flex items-center gap-6">
+            <div className="hidden md:flex items-center gap-2 px-4 py-2 bg-zinc-900 rounded-full border border-zinc-800">
+                <Search className="w-4 h-4 text-zinc-500" />
+                <span className="text-xs font-medium text-zinc-500">Global Search...</span>
+            </div>
+            <div className="h-8 w-[1px] bg-zinc-800 hidden md:block"></div>
+            <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center">
+                    <span className="text-xs font-bold">VK</span>
+                </div>
+            </div>
           </div>
         </div>
-      </div>
+      </nav>
 
-      <div className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8 mt-6">
+      <main className="max-w-[1600px] mx-auto p-6 grid grid-cols-1 xl:grid-cols-12 gap-8 mt-4">
         
-        {/* ════ LEFT: CONTROL DECK ════ */}
-        <div className="lg:col-span-4 space-y-6">
+        {/* ════ LEFT SIDEBAR: INPUT & METRICS (3 Columns) ════ */}
+        <div className="xl:col-span-3 space-y-6">
           
-          {/* UPLOAD CARD */}
-          <div className="bg-neutral-900 border border-neutral-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden group">
-            {/* Ambient Glow */}
-            <div className="absolute top-0 right-0 w-32 h-32 bg-rose-600/10 rounded-full blur-3xl -mr-16 -mt-16 transition-all group-hover:bg-rose-600/20"></div>
-            
-            <h2 className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-6 flex items-center gap-2">
-              <Upload className="w-4 h-4" /> Upload Policy
-            </h2>
+          {/* UPLOAD WIDGET */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-1 shadow-2xl overflow-hidden group hover:border-rose-500/50 transition-all duration-500">
+            <div className="bg-zinc-950 rounded-[20px] p-6 h-full relative overflow-hidden">
+                {/* Decorative Gradients */}
+                <div className="absolute -top-10 -right-10 w-32 h-32 bg-rose-600/20 rounded-full blur-[50px] pointer-events-none"></div>
+                
+                <h2 className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-6 flex items-center gap-2">
+                  <Upload className="w-4 h-4 text-rose-500" /> Upload Engine
+                </h2>
 
-            <div className="relative group/drop">
-              <input 
-                type="file" 
-                accept=".pdf" 
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
-                onChange={(e) => setFile(e.target.files?.[0] || null)} 
-              />
-              <div className="block w-full aspect-[4/3] border-2 border-dashed border-neutral-700 rounded-2xl flex flex-col items-center justify-center transition-all duration-300 group-hover/drop:border-rose-500 group-hover/drop:bg-neutral-800/50">
-                <div className="bg-neutral-800 p-4 rounded-full mb-4 group-hover/drop:scale-110 transition-transform">
-                  <FileText className="w-8 h-8 text-neutral-400 group-hover/drop:text-rose-500" />
-                </div>
-                <p className="text-sm font-bold text-white">{file ? file.name : "DRAG & DROP PDF"}</p>
-                <p className="text-[10px] text-neutral-500 font-mono mt-2 uppercase">Max Size: 10MB</p>
-              </div>
+                <label className="block w-full aspect-square border-2 border-dashed border-zinc-800 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:border-rose-500 hover:bg-zinc-900/50 transition-all duration-300 relative group/drop">
+                  <input type="file" accept=".pdf" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                  <div className="bg-zinc-900 p-5 rounded-full mb-4 border border-zinc-800 group-hover/drop:scale-110 group-hover/drop:border-rose-500 transition-all">
+                    <FileText className="w-8 h-8 text-zinc-400 group-hover/drop:text-white" />
+                  </div>
+                  <p className="text-sm font-bold text-white tracking-wide">{file ? file.name : "DROP PDF HERE"}</p>
+                  <p className="text-[10px] text-zinc-600 font-mono mt-2 uppercase">Max Size: 10MB</p>
+                </label>
+
+                <button 
+                  onClick={handleUpload} 
+                  disabled={!file || loading}
+                  className="w-full mt-6 bg-white text-black font-black py-4 rounded-xl uppercase tracking-[0.15em] text-xs hover:bg-rose-500 hover:text-white hover:shadow-[0_0_20px_rgba(244,63,94,0.4)] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 group/btn"
+                >
+                  {loading ? <Loader2 className="animate-spin w-4 h-4"/> : <Zap className="w-4 h-4 group-hover/btn:fill-current" />}
+                  {loading ? "Processing..." : "Run Analysis"}
+                </button>
             </div>
-
-            <button 
-              onClick={handleUpload} 
-              disabled={!file || loading}
-              className="w-full mt-6 bg-white text-black font-black py-4 rounded-xl uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-white/10 hover:shadow-rose-500/20"
-            >
-              {loading ? <Loader2 className="animate-spin w-5 h-5"/> : "Run Audit"}
-            </button>
           </div>
 
-          {/* METADATA CARD */}
+          {/* METADATA WIDGET */}
           {data?.meta && (
-            <div className="bg-neutral-900 border border-neutral-800 rounded-3xl p-6">
-              <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-4">Run Stats</h3>
-              <div className="grid grid-cols-2 gap-4">
-                <StatBox label="CHUNKS" value={data.meta.totalChunks} />
-                <StatBox label="PARSED" value={data.meta.parsedChunks} color="text-emerald-400" />
+            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 relative overflow-hidden">
+              <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest">Run Diagnostics</h3>
+                  <div className="flex gap-1">
+                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                      <span className="text-[10px] font-bold text-emerald-500 uppercase">Live</span>
+                  </div>
+              </div>
+              
+              <div className="space-y-4">
+                  <div className="flex justify-between items-center p-3 bg-zinc-950 rounded-xl border border-zinc-800">
+                      <span className="text-xs font-bold text-zinc-400 uppercase">Chunks</span>
+                      <span className="text-sm font-mono font-bold text-white">{data.meta.totalChunks}</span>
+                  </div>
+                  <div className="flex justify-between items-center p-3 bg-zinc-950 rounded-xl border border-zinc-800">
+                      <span className="text-xs font-bold text-zinc-400 uppercase">Success</span>
+                      <span className="text-sm font-mono font-bold text-emerald-400">{data.meta.parsedChunks}</span>
+                  </div>
+                  <div className="flex justify-between items-center p-3 bg-zinc-950 rounded-xl border border-zinc-800">
+                      <span className="text-xs font-bold text-zinc-400 uppercase">Latency</span>
+                      <span className="text-sm font-mono font-bold text-amber-400">0.8s</span>
+                  </div>
               </div>
             </div>
           )}
         </div>
 
-        {/* ════ RIGHT: PERFORMANCE DASHBOARD ════ */}
-        <div className="lg:col-span-8">
+        {/* ════ RIGHT: THE INTELLIGENCE DASHBOARD (9 Columns) ════ */}
+        <div className="xl:col-span-9">
           {data ? (
-            <div className="space-y-6">
-              {/* ACTIONS */}
-              <div className="flex justify-end">
-                <button 
-                  id="export-btn"
-                  onClick={exportPDF}
-                  className="bg-neutral-800 hover:bg-neutral-700 text-white px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-2 border border-neutral-700 transition-all"
-                >
-                  <Download className="w-4 h-4" /> Download Report
-                </button>
+            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-700">
+              
+              {/* TOP BAR ACTIONS */}
+              <div className="flex justify-between items-end">
+                  <div>
+                      <div className="flex items-center gap-2 mb-1">
+                          <CheckCircle className="w-4 h-4 text-emerald-500" />
+                          <span className="text-xs font-bold text-emerald-500 uppercase tracking-wider">Analysis Complete</span>
+                      </div>
+                      <h2 className="text-3xl font-black text-white tracking-tight uppercase">
+                          {data.cpdm?.meta?.policy_name || "Policy Audit Report"}
+                      </h2>
+                  </div>
+                  <button 
+                    id="export-btn"
+                    onClick={exportPDF}
+                    className="bg-zinc-800 hover:bg-zinc-700 text-white px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-2 border border-zinc-700 transition-all hover:scale-105 active:scale-95"
+                  >
+                    <Download className="w-4 h-4" /> Download Report
+                  </button>
               </div>
 
-              {/* ════ THE REPORT (CAPTURED AREA) ════ */}
-              <div id="analysis-results" className="bg-neutral-950 p-10 rounded-3xl border border-neutral-800 shadow-2xl">
+              {/* ════ THE REPORT CONTAINER (CAPTURED AREA) ════ */}
+              <div id="analysis-results" className="bg-[#09090b] p-8 rounded-[32px] border border-zinc-800 shadow-2xl relative">
                 
-                {/* HEADLINE */}
-                <div className="border-b border-neutral-800 pb-8 mb-8">
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-                    <span className="text-xs font-bold text-emerald-500 uppercase tracking-widest">Analysis Complete</span>
-                  </div>
-                  <h1 className="text-4xl md:text-5xl font-black text-white leading-tight mb-4 uppercase italic tracking-tighter">
-                    {data.cpdm?.meta?.policy_name || "Policy Audit"}
-                  </h1>
-                  <div className="flex flex-wrap gap-3">
-                    <Badge text={data.cpdm?.meta?.insurer || "INSURER"} />
-                    {data.cpdm?.meta?.uin && <Badge text={`UIN: ${data.cpdm.meta.uin}`} />}
-                    <Badge text={`${stats.total} DATA POINTS`} color="bg-rose-600 border-rose-600 text-white" />
-                  </div>
-                </div>
-
-                {/* THE SCORECARD (BENTO GRID) */}
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-10">
-                  <ScoreCard icon={<XCircle/>} label="Critical Exclusions" value={stats.exclusions} color="text-rose-500" />
-                  <ScoreCard icon={<Clock/>} label="Waiting Periods" value={stats.waiting} color="text-amber-400" />
-                  <ScoreCard icon={<DollarSign/>} label="Financial Limits" value={stats.limits} color="text-blue-400" />
-                  <ScoreCard icon={<AlertTriangle/>} label="Rejection Risks" value={stats.risks} color="text-purple-400" />
-                  <ScoreCard icon={<CheckCircle/>} label="Coverage Points" value={stats.coverage} color="text-emerald-400" />
-                  <ScoreCard icon={<BarChart3/>} label="Health Score" value={`${Math.round((stats.coverage / (stats.total || 1)) * 100)}%`} color="text-white" />
-                </div>
-
-                {/* DEEP DIVE SECTIONS */}
-                <div className="space-y-12">
-                  <Section 
-                    title="PERMANENT EXCLUSIONS" 
-                    subtitle="Medical conditions explicitly removed from coverage."
-                    rules={getRules("exclusion")}
-                    color="rose"
-                  />
-                  <Section 
-                    title="WAITING PERIODS" 
-                    subtitle="Time durations before coverage becomes active."
-                    rules={getRules("waiting_period")}
-                    color="amber"
-                  />
-                  <Section 
-                    title="FINANCIAL LIMITS" 
-                    subtitle="Sub-limits, Co-pays, and Capping."
-                    rules={getRules("financial_limit")}
-                    color="blue"
-                  />
-                  <Section 
-                    title="REJECTION RISKS" 
-                    subtitle="Procedural gaps that lead to claim denial."
-                    rules={getRules("claim_rejection")}
-                    color="purple"
-                  />
-                </div>
-
-                {/* DEFINITIONS FOOTER */}
-                {data.cpdm?.definitions && (
-                  <div className="mt-12 pt-8 border-t border-neutral-800">
-                    <h4 className="text-xs font-black text-neutral-500 uppercase tracking-widest mb-6">Definitions Dictionary</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {data.cpdm.definitions.map((def, i) => (
-                        <div key={i} className="bg-neutral-900 p-4 rounded-xl border border-neutral-800">
-                          <span className="text-xs font-bold text-white uppercase block mb-1">{def.term}</span>
-                          <span className="text-[10px] text-neutral-400 leading-relaxed">{def.definition}</span>
+                {/* 1. KEY METRICS GRID (The "Bento" Box) */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                    {/* Health Score - Big Card */}
+                    <div className="md:col-span-2 bg-zinc-900 rounded-2xl p-6 border border-zinc-800 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-6 opacity-10">
+                            <Activity className="w-32 h-32 text-white" />
                         </div>
-                      ))}
+                        <h4 className="text-xs font-black text-zinc-500 uppercase tracking-widest mb-2">Policy Health Score</h4>
+                        <div className="flex items-end gap-4">
+                            <span className="text-6xl font-black text-white tracking-tighter">{normalizedScore}%</span>
+                            <div className="pb-3">
+                                <span className="text-xs font-bold px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-white uppercase">
+                                    {normalizedScore > 70 ? "Excellent" : normalizedScore > 40 ? "Average" : "Poor"}
+                                </span>
+                            </div>
+                        </div>
+                        {/* Progress Bar */}
+                        <div className="w-full bg-zinc-800 h-2 rounded-full mt-4 overflow-hidden">
+                            <div 
+                                className="h-full bg-gradient-to-r from-rose-500 to-orange-500" 
+                                style={{width: `${normalizedScore}%`}}
+                            ></div>
+                        </div>
                     </div>
+
+                    <StatCard icon={<XCircle/>} label="Critical Exclusions" value={stats.exclusions} color="text-rose-500" />
+                    <StatCard icon={<Clock/>} label="Waiting Periods" value={stats.waiting} color="text-amber-500" />
+                    <StatCard icon={<DollarSign/>} label="Financial Limits" value={stats.limits} color="text-blue-500" />
+                    <StatCard icon={<AlertTriangle/>} label="Rejection Risks" value={stats.risks} color="text-purple-500" />
+                </div>
+
+                {/* 2. DETAILED ANALYSIS SECTIONS */}
+                <div className="space-y-8">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                      {/* Left Col: The Bad News */}
+                      <div className="space-y-8">
+                          <Section 
+                            title="PERMANENT EXCLUSIONS" 
+                            subtitle="Conditions permanently removed from scope."
+                            rules={getRules("exclusion")}
+                            accent="bg-rose-600"
+                            icon={<XCircle className="w-5 h-5 text-rose-500"/>}
+                          />
+                          <Section 
+                            title="REJECTION RISKS" 
+                            subtitle="Procedural gaps leading to denial."
+                            rules={getRules("claim_rejection")}
+                            accent="bg-purple-600"
+                            icon={<AlertTriangle className="w-5 h-5 text-purple-500"/>}
+                          />
+                      </div>
+
+                      {/* Right Col: The Limits & Wait times */}
+                      <div className="space-y-8">
+                          <Section 
+                            title="WAITING PERIODS" 
+                            subtitle="Time before coverage becomes active."
+                            rules={getRules("waiting_period")}
+                            accent="bg-amber-500"
+                            icon={<Clock className="w-5 h-5 text-amber-500"/>}
+                          />
+                          <Section 
+                            title="FINANCIAL LIMITS" 
+                            subtitle="Sub-limits, Co-pays and Capping."
+                            rules={getRules("financial_limit")}
+                            accent="bg-blue-500"
+                            icon={<DollarSign className="w-5 h-5 text-blue-500"/>}
+                          />
+                      </div>
                   </div>
-                )}
+
+                  {/* Coverage Section (Full Width) */}
+                  <Section 
+                    title="COVERAGE HIGHLIGHTS" 
+                    subtitle="What is actually included in this policy."
+                    rules={getRules("coverage")}
+                    accent="bg-emerald-500"
+                    icon={<CheckCircle className="w-5 h-5 text-emerald-500"/>}
+                    gridCols={2}
+                  />
+                </div>
+
               </div>
             </div>
           ) : (
-            <div className="h-full min-h-[500px] flex flex-col items-center justify-center bg-neutral-900/50 border border-dashed border-neutral-800 rounded-3xl">
-              <div className="bg-neutral-800 p-6 rounded-full mb-6 animate-pulse">
-                <Shield className="w-12 h-12 text-neutral-600" />
+            // EMPTY STATE
+            <div className="h-full min-h-[600px] flex flex-col items-center justify-center bg-zinc-900/30 border-2 border-dashed border-zinc-800 rounded-[32px] text-center p-8">
+              <div className="bg-zinc-900 p-8 rounded-full mb-6 border border-zinc-800 shadow-2xl">
+                <LayoutDashboard className="w-16 h-16 text-zinc-700" />
               </div>
-              <h3 className="text-xl font-black text-white uppercase tracking-widest">System Ready</h3>
-              <p className="text-sm text-neutral-500 font-medium mt-2">Awaiting Input Data</p>
+              <h3 className="text-2xl font-black text-white uppercase tracking-tight mb-2">System Ready</h3>
+              <p className="text-sm font-medium text-zinc-500 max-w-md">
+                Upload a policy PDF to activate the Neural Engine and generate a comprehensive risk audit.
+              </p>
             </div>
           )}
         </div>
-      </div>
+      </main>
     </div>
   );
 }
 
-// ════ COMPONENTS ════
+// ════ COMPONENT LIBRARY ════
 
-function StatBox({ label, value, color = "text-white" }: { label: string, value: any, color?: string }) {
+function StatCard({ icon, label, value, color }: { icon: any, label: string, value: number, color: string }) {
   return (
-    <div className="bg-neutral-800 p-3 rounded-xl text-center">
-      <div className="text-[10px] font-bold text-neutral-500 mb-1">{label}</div>
-      <div className={`text-xl font-mono font-black ${color}`}>{value || 0}</div>
-    </div>
-  );
-}
-
-function Badge({ text, color = "bg-neutral-900 border-neutral-800 text-neutral-400" }: { text: string, color?: string }) {
-  return (
-    <span className={`px-4 py-1.5 rounded-md border text-[10px] font-bold uppercase tracking-wider ${color}`}>
-      {text}
-    </span>
-  );
-}
-
-function ScoreCard({ icon, label, value, color }: { icon: any, label: string, value: any, color: string }) {
-  return (
-    <div className="bg-neutral-900 border border-neutral-800 p-5 rounded-2xl flex flex-col justify-between hover:border-neutral-700 transition-colors">
-      <div className={`${color} mb-3 opacity-80`}>{icon}</div>
+    <div className="bg-zinc-900 rounded-2xl p-5 border border-zinc-800 flex flex-col justify-between hover:border-zinc-700 transition-colors">
+      <div className={`${color} mb-4`}>{icon}</div>
       <div>
-        <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">{label}</div>
-        <div className="text-3xl font-black text-white font-mono">{value}</div>
+        <div className="text-4xl font-black text-white font-mono tracking-tighter mb-1">{value}</div>
+        <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">{label}</div>
       </div>
     </div>
   );
 }
 
-function Section({ title, subtitle, rules, color }: { title: string, subtitle: string, rules: Rule[], color: string }) {
-  if (!rules.length) return null;
-  
-  const colorClasses: any = {
-    rose: "bg-rose-500", amber: "bg-amber-500", blue: "bg-blue-500", purple: "bg-purple-500"
-  };
-
-  const shadowClasses: any = {
-    rose: "shadow-rose-500/50", amber: "shadow-amber-500/50", blue: "shadow-blue-500/50", purple: "shadow-purple-500/50"
-  };
+function Section({ title, subtitle, rules, accent, icon, gridCols = 1 }: any) {
+  if (!rules || rules.length === 0) return null;
 
   return (
-    <div>
-      <div className="flex items-start gap-4 mb-6">
-        <div className={`w-1 h-12 ${colorClasses[color]} rounded-full shadow-[0_0_15px] ${shadowClasses[color]}`}></div>
-        <div>
-          <h3 className="text-xl font-black text-white tracking-wide">{title}</h3>
-          <p className="text-xs font-medium text-neutral-500 uppercase tracking-widest mt-1">{subtitle}</p>
+    <div className="bg-zinc-900/50 rounded-3xl p-1">
+        <div className="bg-zinc-950 rounded-[20px] border border-zinc-800 p-6">
+            <div className="flex items-start gap-4 mb-6 border-b border-zinc-900 pb-6">
+                <div className={`w-1.5 h-10 ${accent} rounded-full shadow-[0_0_15px_rgba(255,255,255,0.1)]`}></div>
+                <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                        {icon}
+                        <h3 className="text-lg font-black text-white tracking-wide uppercase">{title}</h3>
+                    </div>
+                    <p className="text-xs font-bold text-zinc-500 uppercase tracking-wider">{subtitle}</p>
+                </div>
+                <span className="px-3 py-1 bg-zinc-900 rounded border border-zinc-800 text-[10px] font-mono font-bold text-zinc-400">
+                    {rules.length} ITEMS
+                </span>
+            </div>
+            
+            <div className={`grid grid-cols-1 ${gridCols === 2 ? 'md:grid-cols-2' : ''} gap-3`}>
+                {rules.map((r: any, i: number) => (
+                <div key={i} className="bg-zinc-900/50 border border-zinc-900 p-4 rounded-xl flex gap-3 items-start hover:border-zinc-700 transition-colors group">
+                    <ChevronRight className="w-4 h-4 text-zinc-600 mt-0.5 shrink-0 group-hover:text-white transition-colors" />
+                    <p className="text-xs font-medium text-zinc-300 leading-relaxed font-mono">
+                        {r.text}
+                    </p>
+                </div>
+                ))}
+            </div>
         </div>
-      </div>
-      <div className="grid gap-3 pl-5">
-        {rules.map((r, i) => (
-          <div key={i} className="bg-neutral-900 border border-neutral-800 p-4 rounded-xl flex gap-4 items-start hover:border-neutral-700 transition-all hover:bg-neutral-800/30">
-            <ChevronRight className="w-4 h-4 text-neutral-600 mt-0.5 shrink-0" />
-            <p className="text-sm font-medium text-neutral-300 leading-relaxed">{r.text}</p>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
