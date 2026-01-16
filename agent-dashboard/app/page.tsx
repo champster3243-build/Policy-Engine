@@ -1,13 +1,13 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════════════════
- * POLICY ANALYSIS AGENT DASHBOARD - UI ENHANCED & EXPORT FIXED
+ * POLICY ANALYSIS AGENT DASHBOARD - FINAL EXPORT FIX
  * ═══════════════════════════════════════════════════════════════════════════════════════
  * * PURPOSE: Frontend interface for insurance policy analysis
  * * FEATURES:
  * 1. PDF Upload with drag-and-drop
  * 2. Animated progress bar during analysis
  * 3. Categorized results display (Exclusions, Waiting Periods, etc.)
- * 4. PDF Export of analysis results (FIXED: Full container capture)
+ * 4. PDF Export of analysis results (FIXED: Aggressive Lab Color Sanitizer)
  * 5. Caching indicator (shows if results from library)
  * 6. Statistics dashboard
  * * STATE MANAGEMENT:
@@ -108,8 +108,8 @@ export default function AgentDashboard() {
   };
 
   /**
-   * exportPDF - FIXED version
-   * Added scroll height awareness and window.devicePixelRatio adjustment
+   * exportPDF - NUCLEAR FIX for Lab Colors
+   * Manually sanitizes the DOM clone to remove all modern CSS variables
    */
   const exportPDF = async () => {
     const element = document.getElementById("analysis-results");
@@ -119,47 +119,87 @@ export default function AgentDashboard() {
       return;
     }
 
-    console.info("📸 Capturing audit report...");
+    console.info("📸 Capturing audit report (Sanitizing Colors)...");
     
     try {
-      // Use window.scrollTo(0,0) or capture with scroll options to ensure full height
       const canvas = await html2canvas(element, { 
         scale: 2,           
         useCORS: true,      
         logging: false,
-        backgroundColor: "#ffffff", // Ensure white background in PDF
+        backgroundColor: "#ffffff",
         windowWidth: element.scrollWidth,
         windowHeight: element.scrollHeight,
-        // CRITICAL: Handle color functions that crash html2canvas
+        
+        // -----------------------------------------------------------------------
+        // THE NUCLEAR COLOR SANITIZER
+        // -----------------------------------------------------------------------
         onclone: (clonedDoc) => {
-            const results = clonedDoc.getElementById("analysis-results");
-            if (results) {
-              // Flatten shadows and force solid colors for print safety
-              results.style.boxShadow = "none";
-              const allElements = results.querySelectorAll('*');
-              allElements.forEach((el) => {
-                  const htmlEl = el as HTMLElement;
-                  // Remove shadows from cards for cleaner PDF
-                  htmlEl.style.boxShadow = "none";
-              });
-            }
+          const results = clonedDoc.getElementById("analysis-results");
+          if (results) {
+            // 1. Force Main Container Background
+            results.style.backgroundColor = "#ffffff";
+            results.style.color = "#000000";
+
+            // 2. Iterate EVERY element to strip 'lab()' colors
+            const allElements = results.querySelectorAll('*');
+            allElements.forEach((el) => {
+                const htmlEl = el as HTMLElement;
+                const style = window.getComputedStyle(htmlEl);
+                const classes = htmlEl.className.toString();
+
+                // REMOVE SHADOWS (They crash html2canvas often)
+                htmlEl.style.boxShadow = "none";
+
+                // MANUAL COLOR MAPPING for Backgrounds
+                // We check the class name because getComputedStyle might already return 'lab()'
+                if (classes.includes("bg-red-50")) htmlEl.style.backgroundColor = "#fef2f2";
+                else if (classes.includes("bg-amber-50")) htmlEl.style.backgroundColor = "#fffbeb";
+                else if (classes.includes("bg-blue-50")) htmlEl.style.backgroundColor = "#eff6ff";
+                else if (classes.includes("bg-emerald-50")) htmlEl.style.backgroundColor = "#ecfdf5";
+                else if (classes.includes("bg-purple-50")) htmlEl.style.backgroundColor = "#faf5ff";
+                else if (classes.includes("bg-slate-50")) htmlEl.style.backgroundColor = "#f8fafc";
+                else if (classes.includes("bg-slate-100")) htmlEl.style.backgroundColor = "#f1f5f9";
+                else if (classes.includes("bg-indigo-600")) htmlEl.style.backgroundColor = "#4f46e5";
+                
+                // FALLBACK: If it's still using LAB, force white
+                if (style.backgroundColor.includes("lab(")) {
+                  htmlEl.style.backgroundColor = "#ffffff";
+                }
+
+                // MANUAL COLOR MAPPING for Text
+                if (classes.includes("text-red-950")) htmlEl.style.color = "#450a0a";
+                else if (classes.includes("text-amber-950")) htmlEl.style.color = "#451a03";
+                else if (classes.includes("text-blue-950")) htmlEl.style.color = "#172554";
+                else if (classes.includes("text-purple-950")) htmlEl.style.color = "#3b0764";
+                else if (classes.includes("text-slate-900")) htmlEl.style.color = "#0f172a";
+                else if (classes.includes("text-white")) htmlEl.style.color = "#ffffff";
+
+                // FALLBACK: If text is still LAB, force black
+                if (style.color.includes("lab(")) {
+                   htmlEl.style.color = "#000000";
+                }
+                
+                // FALLBACK: Borders
+                if (style.borderColor.includes("lab(")) {
+                   htmlEl.style.borderColor = "#e2e8f0"; // slate-200
+                }
+            });
+          }
         }
       });
 
       const pdf = new jsPDF("p", "mm", "a4");
-      const imgWidth = 210; // A4 width in mm
-      const pageHeight = 297; // A4 height in mm
+      const imgWidth = 210; 
+      const pageHeight = 297; 
       const imgHeight = (canvas.height * imgWidth) / canvas.width;
       
       let heightLeft = imgHeight;
       let position = 0;
       const imgData = canvas.toDataURL("image/png");
 
-      // Add first page
       pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
       heightLeft -= pageHeight;
 
-      // Handle multi-page PDF if content is long
       while (heightLeft >= 0) {
         position = heightLeft - imgHeight;
         pdf.addPage();
@@ -171,6 +211,7 @@ export default function AgentDashboard() {
       console.info("✅ Export successful");
     } catch (error) {
       console.error("❌ Export failed:", error);
+      alert("Export Error: Browser color incompatibility. Please try Chrome/Edge.");
     }
   };
 
@@ -194,7 +235,7 @@ export default function AgentDashboard() {
     <div className="min-h-screen bg-slate-100 p-8 text-slate-900 font-sans">
       <div className="max-w-6xl mx-auto space-y-8">
         
-        {/* HEADER SECTION - High Contrast Dark Mode */}
+        {/* HEADER SECTION */}
         <div className="bg-slate-950 p-8 rounded-2xl shadow-2xl flex justify-between items-center text-white border border-slate-800">
           <div className="flex items-center gap-5">
             <div className="bg-indigo-600 p-3 rounded-xl shadow-lg shadow-indigo-500/20 ring-1 ring-white/10">
@@ -217,7 +258,7 @@ export default function AgentDashboard() {
         {/* MAIN CONTENT GRID */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
-          {/* LEFT COLUMN: UPLOAD CONTROLS (Spans 4 columns) */}
+          {/* LEFT COLUMN: UPLOAD CONTROLS */}
           <div className="lg:col-span-4 space-y-6">
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
               <h2 className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400 flex items-center gap-2 border-b border-slate-100 pb-4">
@@ -286,7 +327,7 @@ export default function AgentDashboard() {
             )}
           </div>
 
-          {/* RIGHT COLUMN: ANALYSIS RESULTS (Spans 8 columns) */}
+          {/* RIGHT COLUMN: ANALYSIS RESULTS */}
           <div className="lg:col-span-8 space-y-6">
             {data ? (
               <>
