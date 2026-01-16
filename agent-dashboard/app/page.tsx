@@ -1,29 +1,20 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════════════════
- * POLICY ANALYSIS AGENT DASHBOARD
+ * POLICY ANALYSIS AGENT DASHBOARD - UI ENHANCED & EXPORT FIXED
  * ═══════════════════════════════════════════════════════════════════════════════════════
- * 
- * PURPOSE: Frontend interface for insurance policy analysis
- * 
- * FEATURES:
+ * * PURPOSE: Frontend interface for insurance policy analysis
+ * * FEATURES:
  * 1. PDF Upload with drag-and-drop
  * 2. Animated progress bar during analysis
  * 3. Categorized results display (Exclusions, Waiting Periods, etc.)
- * 4. PDF Export of analysis results
+ * 4. PDF Export of analysis results (FIXED: Full container capture)
  * 5. Caching indicator (shows if results from library)
  * 6. Statistics dashboard
- * 
- * STATE MANAGEMENT:
+ * * STATE MANAGEMENT:
  * - loading: Boolean for showing progress UI
  * - data: API response object with analysis results
  * - file: Selected PDF file
- * 
- * API INTEGRATION:
- * - Connects to backend at NEXT_PUBLIC_API_URL
- * - Sends multipart/form-data with PDF
- * - Receives CPDM structure in response
- * 
- */
+ * */
 
 "use client";
 
@@ -39,16 +30,14 @@ import {
   Clock,
   DollarSign,
   XCircle,
-  CheckCircle
+  CheckCircle,
+  Info
 } from "lucide-react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 
 /**
  * TYPE DEFINITIONS
- * 
- * Defines the structure of API response data
- * This helps with TypeScript autocomplete and type safety
  */
 interface Rule {
   category: string;
@@ -80,122 +69,46 @@ interface AnalysisData {
 }
 
 export default function AgentDashboard() {
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  // STATE MANAGEMENT
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  
-  /**
-   * loading: Controls progress bar visibility and button state
-   * - true: Show animated progress bar, disable upload button
-   * - false: Hide progress bar, enable upload button
-   */
   const [loading, setLoading] = useState(false);
-  
-  /**
-   * data: Stores the complete API response
-   * - null initially (no analysis performed yet)
-   * - Contains cpdm, meta, and other response fields after upload
-   */
   const [data, setData] = useState<AnalysisData | null>(null);
-  
-  /**
-   * file: Currently selected PDF file
-   * - null initially (no file selected)
-   * - File object when user selects a PDF
-   */
   const [file, setFile] = useState<File | null>(null);
 
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  // CORE FUNCTION: HANDLE PDF UPLOAD
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  
   /**
    * handleUpload - Main upload and analysis function
-   * 
-   * FLOW:
-   * 1. Validate file is selected
-   * 2. Create FormData with PDF
-   * 3. POST to backend API
-   * 4. Update UI with results
-   * 
-   * ERROR HANDLING:
-   * - Network errors logged to console
-   * - User sees error in browser console
-   * - Loading state properly reset even on error
    */
   const handleUpload = async () => {
-    // VALIDATION: Don't proceed if no file selected
     if (!file) {
       console.warn("⚠️  No file selected");
       return;
     }
 
     console.info("🚀 Initiating upload...");
-    console.info("📄 File:", file.name, `(${(file.size / 1024 / 1024).toFixed(2)} MB)`);
-    
-    // Start loading state (shows progress bar, disables button)
     setLoading(true);
 
-    // Create multipart form data
     const formData = new FormData();
     formData.append("pdf", file);
 
     try {
-      // IMPORTANT: Use environment variable for API URL
-      // This allows different URLs for development vs production
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
-      
-      console.info("🌐 Calling API:", `${apiUrl}/upload-pdf`);
-      
-      // Send POST request to backend
       const res = await fetch(`${apiUrl}/upload-pdf`, { 
         method: "POST", 
         body: formData 
       });
 
-      // Parse JSON response
       const result = await res.json();
-      
-      console.log("✅ Analysis Received:");
-      console.log("   Job ID:", result.jobId);
-      console.log("   Cached:", result.isCached || false);
-      console.log("   Total Rules:", result.cpdm?.rules?.length || 0);
-      console.log("   Definitions:", Object.keys(result.definitions || {}).length);
-      
-      // Store result in state (triggers UI update)
       setData(result);
       
     } catch (e) {
       console.error("❌ Frontend Error:", e);
-      // TODO: Show user-friendly error message in UI
       alert("Analysis failed. Check console for details.");
     } finally {
-      // Always stop loading, even if error occurred
       setLoading(false);
-      console.info("🏁 Upload process complete");
     }
   };
 
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  // FEATURE: PDF EXPORT
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  
   /**
-   * exportPDF - Generate downloadable PDF report
-   * 
-   * HOW IT WORKS:
-   * 1. html2canvas captures the #analysis-results div as image
-   * 2. jsPDF creates a PDF and embeds the image
-   * 3. User downloads "Audit-Report.pdf"
-   * 
-   * PARAMETERS:
-   * - scale: 2 for high resolution (retina displays)
-   * - useCORS: true to load external images (if any)
-   * 
-   * PDF FORMAT:
-   * - Portrait orientation ("p")
-   * - Millimeters ("mm")
-   * - A4 size (210mm x 297mm)
+   * exportPDF - FIXED version
+   * Added scroll height awareness and window.devicePixelRatio adjustment
    */
   const exportPDF = async () => {
     const element = document.getElementById("analysis-results");
@@ -205,59 +118,51 @@ export default function AgentDashboard() {
       return;
     }
 
-    console.info("📸 Capturing screenshot...");
+    console.info("📸 Capturing audit report...");
     
-    // Capture div as canvas
-    const canvas = await html2canvas(element, { 
-      scale: 2,           // Higher resolution
-      useCORS: true,      // Allow external resources
-      logging: false      // Disable console logs from html2canvas
-    });
+    try {
+      // Use window.scrollTo(0,0) or capture with scroll options to ensure full height
+      const canvas = await html2canvas(element, { 
+        scale: 2,           
+        useCORS: true,      
+        logging: false,
+        backgroundColor: "#ffffff", // Ensure white background in PDF
+        windowWidth: element.scrollWidth,
+        windowHeight: element.scrollHeight
+      });
 
-    console.info("📄 Generating PDF...");
-    
-    // Create PDF document
-    const pdf = new jsPDF("p", "mm", "a4");
-    
-    // Calculate dimensions to fit A4 (210mm width)
-    const imgWidth = 210;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-    
-    // Add image to PDF
-    pdf.addImage(
-      canvas.toDataURL("image/png"), 
-      "PNG", 
-      0,        // X position
-      0,        // Y position
-      imgWidth, 
-      imgHeight
-    );
-    
-    // Trigger download
-    pdf.save("Audit-Report.pdf");
-    
-    console.info("✅ PDF downloaded");
+      const pdf = new jsPDF("p", "mm", "a4");
+      const imgWidth = 210; // A4 width in mm
+      const pageHeight = 297; // A4 height in mm
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      
+      let heightLeft = imgHeight;
+      let position = 0;
+      const imgData = canvas.toDataURL("image/png");
+
+      // Add first page
+      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+
+      // Handle multi-page PDF if content is long
+      while (heightLeft >= 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+      
+      pdf.save(`Audit-Report-${data?.meta?.policy_name || "Policy"}.pdf`);
+      console.info("✅ Export successful");
+    } catch (error) {
+      console.error("❌ Export failed:", error);
+    }
   };
 
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  // HELPER FUNCTIONS
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  
-  /**
-   * Filter rules by category
-   * 
-   * USAGE: getRulesByCategory("exclusion")
-   * RETURNS: Array of rules with that category
-   */
   const getRulesByCategory = (category: string): Rule[] => {
     return data?.cpdm?.rules?.filter(r => r.category === category) || [];
   };
 
-  /**
-   * Calculate statistics
-   * 
-   * RETURNS: Object with counts of each rule type
-   */
   const getStats = () => {
     const rules = data?.cpdm?.rules || [];
     return {
@@ -270,184 +175,134 @@ export default function AgentDashboard() {
     };
   };
 
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  // RENDER UI
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  
   return (
-    <div className="min-h-screen bg-slate-50 p-8">
+    <div className="min-h-screen bg-slate-100 p-8 text-slate-900">
       <div className="max-w-6xl mx-auto space-y-8">
         
-        {/* ═══════════════════════════════════════════════════════════════════════ */}
         {/* HEADER SECTION */}
-        {/* ═══════════════════════════════════════════════════════════════════════ */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border flex justify-between items-center">
-          <h1 className="text-3xl font-black flex items-center gap-3">
-            <Shield className="text-blue-600"/> 
-            Agent Center
-          </h1>
+        <div className="bg-slate-900 p-8 rounded-2xl shadow-xl flex justify-between items-center text-white">
+          <div className="flex items-center gap-4">
+            <div className="bg-blue-600 p-3 rounded-xl shadow-lg shadow-blue-500/30">
+              <Shield className="w-8 h-8 text-white"/> 
+            </div>
+            <div>
+              <h1 className="text-3xl font-black tracking-tight">Agent Command Center</h1>
+              <p className="text-slate-400 text-sm font-medium">Policy Audit & Compliance Intelligence</p>
+            </div>
+          </div>
           
-          {/* CACHE INDICATOR: Shows if results are from library */}
           {data?.isCached && (
-            <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">
-              📚 Library Record
+            <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-4 py-2 rounded-full text-xs font-black tracking-widest uppercase">
+              ⚡ Library Record Found
             </span>
           )}
         </div>
 
-        {/* ═══════════════════════════════════════════════════════════════════════ */}
         {/* MAIN CONTENT GRID */}
-        {/* ═══════════════════════════════════════════════════════════════════════ */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           
-          {/* ─────────────────────────────────────────────────────────────────── */}
           {/* LEFT COLUMN: UPLOAD CONTROLS */}
-          {/* ─────────────────────────────────────────────────────────────────── */}
-          <div className="bg-white p-6 rounded-2xl border space-y-6">
-            
-            {/* Section Header */}
-            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-4 flex items-center gap-2">
-              <Activity className="w-4 h-4" /> Controls
-            </h2>
-            
-            {/* File Upload Zone */}
-            <div className="border-2 border-dashed rounded-xl p-8 text-center relative hover:border-blue-400 transition-colors">
-              {/* Hidden file input (activated by clicking anywhere in zone) */}
-              <input 
-                type="file" 
-                accept=".pdf"
-                onChange={(e) => {
-                  const selectedFile = e.target.files?.[0];
-                  if (selectedFile) {
-                    console.info("📁 File selected:", selectedFile.name);
-                    setFile(selectedFile);
-                  }
-                }} 
-                className="absolute inset-0 opacity-0 cursor-pointer" 
-              />
+          <div className="space-y-6">
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
+              <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 flex items-center gap-2">
+                <Activity className="w-3 h-3" /> Input Controls
+              </h2>
               
-              <FileText className="mx-auto text-slate-300 w-12 h-12 mb-2" />
-              <p className="text-sm font-bold text-slate-600">
-                {file ? file.name : "Click to Select PDF"}
-              </p>
-              {file && (
-                <p className="text-xs text-slate-400 mt-1">
-                  {(file.size / 1024 / 1024).toFixed(2)} MB
-                </p>
-              )}
-            </div>
-            
-            {/* Progress Bar (only visible when loading=true) */}
-            {loading && (
-              <div className="space-y-2">
-                <div className="bg-slate-100 h-2 rounded-full overflow-hidden">
-                  {/* 
-                    ANIMATED PROGRESS BAR
-                    
-                    CSS Animation simulates progress (0% → 100% over 10 seconds)
-                    This is a FAKE progress bar (we don't have real progress updates)
-                    
-                    For REAL progress, you would need:
-                    1. Backend to emit progress events (Supabase Realtime)
-                    2. Frontend to listen to those events
-                    3. Update a state variable (e.g., progress: 0-100)
-                  */}
-                  <div className="bg-blue-600 h-full animate-[loading_10s_ease-in-out_infinite] origin-left"></div>
+              <div className="border-2 border-dashed border-slate-200 rounded-2xl p-8 text-center relative hover:border-blue-500 hover:bg-blue-50/30 transition-all group">
+                <input 
+                  type="file" 
+                  accept=".pdf"
+                  onChange={(e) => {
+                    const selectedFile = e.target.files?.[0];
+                    if (selectedFile) setFile(selectedFile);
+                  }} 
+                  className="absolute inset-0 opacity-0 cursor-pointer" 
+                />
+                
+                <div className="bg-slate-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                  <FileText className="text-slate-400 w-8 h-8" />
                 </div>
-                <p className="text-xs text-center text-slate-500 font-medium">
-                  Analyzing policy... This may take 30-60 seconds
+                <p className="text-sm font-bold text-slate-700">
+                  {file ? file.name : "Drop policy PDF here"}
+                </p>
+                <p className="text-[10px] uppercase font-black text-slate-400 mt-2 tracking-widest">
+                  {file ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : "Max 10MB"}
                 </p>
               </div>
-            )}
-            
-            {/* Upload Button */}
-            <button 
-              onClick={handleUpload} 
-              disabled={loading || !file}
-              className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-all disabled:bg-slate-300 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="animate-spin w-4 h-4"/> 
-                  Processing...
-                </>
-              ) : (
-                <>
-                  <Upload className="w-4 h-4"/>
-                  Run Deep Audit
-                </>
+              
+              {loading && (
+                <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                  <div className="flex justify-between items-center mb-1">
+                     <span className="text-[10px] uppercase font-black text-blue-600 animate-pulse">Scanning Document...</span>
+                  </div>
+                  <div className="bg-slate-200 h-2 rounded-full overflow-hidden">
+                    <div className="bg-blue-600 h-full animate-[loading_10s_ease-in-out_infinite] origin-left"></div>
+                  </div>
+                </div>
               )}
-            </button>
+              
+              <button 
+                onClick={handleUpload} 
+                disabled={loading || !file}
+                className="w-full bg-slate-900 text-white font-black py-4 rounded-xl uppercase text-[11px] tracking-[0.2em] hover:bg-blue-600 transition-all shadow-lg active:scale-95 disabled:bg-slate-100 disabled:text-slate-400 flex items-center justify-center gap-2"
+              >
+                {loading ? <Loader2 className="animate-spin w-4 h-4"/> : <Upload className="w-4 h-4"/>}
+                {loading ? "Processing Engine..." : "Analyze Competitor Policy"}
+              </button>
+            </div>
 
-            {/* Processing Stats (only show if data exists) */}
             {data?.meta && (
-              <div className="pt-4 border-t space-y-2">
-                <h3 className="text-xs font-black uppercase tracking-widest text-slate-400">
-                  Processing Stats
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">
+                  Metadata Intelligence
                 </h3>
-                <div className="text-xs space-y-1">
-                  <div className="flex justify-between">
-                    <span className="text-slate-600">Total Chunks:</span>
-                    <span className="font-bold">{data.meta.totalChunks}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-600">Parsed:</span>
-                    <span className="font-bold text-green-600">{data.meta.parsedChunks}</span>
-                  </div>
-                  {(data.meta.failedChunks || 0) > 0 && (
-                    <div className="flex justify-between">
-                      <span className="text-slate-600">Failed:</span>
-                      <span className="font-bold text-red-600">{data.meta.failedChunks}</span>
-                    </div>
-                  )}
+                <div className="grid grid-cols-2 gap-4">
+                   <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                      <p className="text-[10px] text-slate-400 uppercase font-bold">Chunks</p>
+                      <p className="text-lg font-black">{data.meta.totalChunks}</p>
+                   </div>
+                   <div className="bg-emerald-50 p-3 rounded-lg border border-emerald-100">
+                      <p className="text-[10px] text-emerald-600 uppercase font-bold">Success</p>
+                      <p className="text-lg font-black text-emerald-700">{data.meta.parsedChunks}</p>
+                   </div>
                 </div>
               </div>
             )}
           </div>
 
-          {/* ─────────────────────────────────────────────────────────────────── */}
-          {/* RIGHT COLUMN: ANALYSIS RESULTS (2/3 width) */}
-          {/* ─────────────────────────────────────────────────────────────────── */}
+          {/* RIGHT COLUMN: ANALYSIS RESULTS */}
           <div className="lg:col-span-2 space-y-4">
-            
-            {/* Only show if analysis data exists */}
             {data && (
               <>
-                {/* Export Button */}
                 <div className="flex justify-end">
                   <button 
                     onClick={exportPDF} 
-                    className="bg-white border px-4 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-2 hover:bg-slate-50 transition-colors"
+                    className="bg-blue-600 text-white px-6 py-3 rounded-xl text-[11px] font-black uppercase tracking-[0.2em] flex items-center gap-2 hover:bg-slate-900 transition-all shadow-lg shadow-blue-500/20"
                   >
                     <Download className="w-4 h-4"/> 
-                    Export Report
+                    Download Audit Report
                   </button>
                 </div>
 
-                {/* ═══════════════════════════════════════════════════════════ */}
-                {/* ANALYSIS RESULTS CONTAINER (This gets exported to PDF) */}
-                {/* ═══════════════════════════════════════════════════════════ */}
-                <div id="analysis-results" className="space-y-6 bg-white p-8 rounded-2xl">
+                <div id="analysis-results" className="space-y-6 bg-white p-10 rounded-3xl border border-slate-200 shadow-xl">
                   
                   {/* Policy Header */}
-                  <div className="border-b pb-4">
-                    <h2 className="text-2xl font-black text-slate-900">
-                      {data.cpdm?.meta?.policy_name || data.meta?.policy_name || "Policy Analysis Report"}
+                  <div className="border-b-4 border-slate-900 pb-6 mb-8">
+                    <div className="flex items-center gap-3 mb-2">
+                       <CheckCircle className="w-5 h-5 text-emerald-500" />
+                       <span className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Analysis Output</span>
+                    </div>
+                    <h2 className="text-4xl font-black text-slate-900 leading-tight">
+                      {data.cpdm?.meta?.policy_name || data.meta?.policy_name || "Policy Analysis"}
                     </h2>
-                    {data.cpdm?.meta?.insurer && (
-                      <p className="text-sm text-slate-600 mt-1">
-                        {data.cpdm.meta.insurer}
-                      </p>
-                    )}
-                    {data.cpdm?.meta?.uin && (
-                      <p className="text-xs text-slate-400 mt-1">
-                        UIN: {data.cpdm.meta.uin}
-                      </p>
-                    )}
+                    <div className="mt-4 flex flex-wrap gap-4">
+                        <span className="bg-slate-100 px-3 py-1 rounded text-[10px] font-bold text-slate-600 uppercase">{data.cpdm?.meta?.insurer || "Unknown Insurer"}</span>
+                        {data.cpdm?.meta?.uin && <span className="bg-slate-100 px-3 py-1 rounded text-[10px] font-bold text-slate-600 uppercase">UIN: {data.cpdm.meta.uin}</span>}
+                    </div>
                   </div>
 
                   {/* Statistics Dashboard */}
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8">
                     {(() => {
                       const stats = getStats();
                       return (
@@ -460,19 +315,19 @@ export default function AgentDashboard() {
                           />
                           <StatCard 
                             icon={<Clock className="w-5 h-5" />}
-                            label="Waiting Periods"
+                            label="Waiting"
                             value={stats.waitingPeriods}
                             color="yellow"
                           />
                           <StatCard 
                             icon={<DollarSign className="w-5 h-5" />}
-                            label="Financial Limits"
+                            label="Limits"
                             value={stats.financialLimits}
                             color="orange"
                           />
                           <StatCard 
                             icon={<CheckCircle className="w-5 h-5" />}
-                            label="Coverage"
+                            label="Covered"
                             value={stats.coverage}
                             color="green"
                           />
@@ -483,8 +338,8 @@ export default function AgentDashboard() {
                             color="purple"
                           />
                           <StatCard 
-                            icon={<FileText className="w-5 h-5" />}
-                            label="Total Rules"
+                            icon={<Info className="w-5 h-5" />}
+                            label="Rules"
                             value={stats.total}
                             color="blue"
                           />
@@ -493,87 +348,73 @@ export default function AgentDashboard() {
                     })()}
                   </div>
 
-                  {/* EXCLUSIONS SECTION */}
-                  <RuleSection
-                    title="🚫 Permanent Exclusions"
-                    subtitle="Conditions that are NEVER covered under this policy"
-                    rules={getRulesByCategory("exclusion")}
-                    bgColor="bg-red-50"
-                    borderColor="border-red-100"
-                    textColor="text-red-800"
-                  />
-
-                  {/* WAITING PERIODS SECTION */}
-                  <RuleSection
-                    title="⏳ Waiting Periods"
-                    subtitle="Time delays before coverage begins"
-                    rules={getRulesByCategory("waiting_period")}
-                    bgColor="bg-yellow-50"
-                    borderColor="border-yellow-100"
-                    textColor="text-yellow-800"
-                  />
-
-                  {/* FINANCIAL LIMITS SECTION */}
-                  <RuleSection
-                    title="💰 Financial Limits & Co-pays"
-                    subtitle="Caps on coverage amounts and cost-sharing requirements"
-                    rules={getRulesByCategory("financial_limit")}
-                    bgColor="bg-orange-50"
-                    borderColor="border-orange-100"
-                    textColor="text-orange-800"
-                  />
-
-                  {/* CLAIM REJECTION RISKS */}
-                  <RuleSection
-                    title="⚠️ Claim Rejection Conditions"
-                    subtitle="Reasons your claim might be denied"
-                    rules={getRulesByCategory("claim_rejection")}
-                    bgColor="bg-purple-50"
-                    borderColor="border-purple-100"
-                    textColor="text-purple-800"
-                  />
-
-                  {/* COVERAGE (optional, usually very long) */}
-                  {getRulesByCategory("coverage").length > 0 && (
+                  <div className="space-y-10">
                     <RuleSection
-                      title="✅ Coverage Highlights"
-                      subtitle="What IS covered by this policy"
-                      rules={getRulesByCategory("coverage").slice(0, 10)} // Limit to first 10
-                      bgColor="bg-green-50"
-                      borderColor="border-green-100"
-                      textColor="text-green-800"
+                      title="Permanent Exclusions"
+                      subtitle="Items explicitly removed from coverage scope"
+                      rules={getRulesByCategory("exclusion")}
+                      accentColor="bg-red-600"
+                      bgColor="bg-red-50"
+                      textColor="text-red-950"
                     />
-                  )}
 
-                  {/* DEFINITIONS (collapsible) */}
-                  {data.cpdm?.definitions && data.cpdm.definitions.length > 0 && (
-                    <details className="border rounded-xl p-4">
-                      <summary className="font-black text-sm uppercase tracking-widest text-slate-600 cursor-pointer">
-                        📖 Definitions ({data.cpdm.definitions.length})
-                      </summary>
-                      <div className="mt-4 space-y-3">
-                        {data.cpdm.definitions.map((def, i) => (
-                          <div key={i} className="border-l-4 border-blue-200 pl-4">
-                            <dt className="font-bold text-sm text-slate-900">{def.term}</dt>
-                            <dd className="text-xs text-slate-600 mt-1">{def.definition}</dd>
-                          </div>
-                        ))}
+                    <RuleSection
+                      title="Waiting Periods"
+                      subtitle="Temporal requirements before claim eligibility"
+                      rules={getRulesByCategory("waiting_period")}
+                      accentColor="bg-yellow-500"
+                      bgColor="bg-yellow-50"
+                      textColor="text-yellow-950"
+                    />
+
+                    <RuleSection
+                      title="Sub-Limits & Co-Pays"
+                      subtitle="Financial caps and sharing arrangements"
+                      rules={getRulesByCategory("financial_limit")}
+                      accentColor="bg-orange-500"
+                      bgColor="bg-orange-50"
+                      textColor="text-orange-950"
+                    />
+
+                    <RuleSection
+                      title="Claim Rejection Risks"
+                      subtitle="Process gaps that may lead to claim denial"
+                      rules={getRulesByCategory("claim_rejection")}
+                      accentColor="bg-purple-600"
+                      bgColor="bg-purple-50"
+                      textColor="text-purple-950"
+                    />
+
+                    {data.cpdm?.definitions && data.cpdm.definitions.length > 0 && (
+                      <div className="pt-8 border-t border-slate-100">
+                        <h3 className="font-black text-[11px] uppercase tracking-[0.2em] text-slate-400 mb-6 flex items-center gap-2">
+                           <FileText className="w-4 h-4" /> Comprehensive Definitions
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {data.cpdm.definitions.map((def, i) => (
+                            <div key={i} className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                              <dt className="font-black text-[10px] uppercase tracking-wider text-blue-700 mb-1">{def.term}</dt>
+                              <dd className="text-xs text-slate-700 font-medium leading-relaxed">{def.definition}</dd>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </details>
-                  )}
+                    )}
+                  </div>
                 </div>
               </>
             )}
 
-            {/* Empty State (no analysis yet) */}
             {!data && !loading && (
-              <div className="bg-white p-16 rounded-2xl border-2 border-dashed text-center">
-                <Shield className="w-16 h-16 mx-auto text-slate-300 mb-4" />
-                <h3 className="text-xl font-bold text-slate-400 mb-2">
-                  No Analysis Yet
+              <div className="bg-white p-24 rounded-3xl border-4 border-dashed border-slate-100 text-center">
+                <div className="bg-slate-50 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <Shield className="w-10 h-10 text-slate-200" />
+                </div>
+                <h3 className="text-2xl font-black text-slate-300 mb-2 uppercase tracking-tighter">
+                  Analysis Engine Idle
                 </h3>
-                <p className="text-sm text-slate-400">
-                  Upload a policy PDF to begin analysis
+                <p className="text-sm font-medium text-slate-400">
+                  Awaiting competitor policy upload for processing
                 </p>
               </div>
             )}
@@ -581,9 +422,6 @@ export default function AgentDashboard() {
         </div>
       </div>
 
-      {/* ═══════════════════════════════════════════════════════════════════════ */}
-      {/* GLOBAL STYLES (CSS Animation for Progress Bar) */}
-      {/* ═══════════════════════════════════════════════════════════════════════ */}
       <style jsx global>{`
         @keyframes loading {
           0% { transform: scaleX(0); }
@@ -598,11 +436,6 @@ export default function AgentDashboard() {
 // REUSABLE COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * STAT CARD COMPONENT
- * 
- * Displays a statistic with icon, label, and value
- */
 interface StatCardProps {
   icon: React.ReactNode;
   label: string;
@@ -612,53 +445,53 @@ interface StatCardProps {
 
 function StatCard({ icon, label, value, color }: StatCardProps) {
   const colorMap = {
-    red: "bg-red-100 text-red-700",
-    yellow: "bg-yellow-100 text-yellow-700",
-    orange: "bg-orange-100 text-orange-700",
-    green: "bg-green-100 text-green-700",
-    purple: "bg-purple-100 text-purple-700",
-    blue: "bg-blue-100 text-blue-700"
+    red: "bg-red-50 text-red-700 border-red-100",
+    yellow: "bg-yellow-50 text-yellow-700 border-yellow-100",
+    orange: "bg-orange-50 text-orange-700 border-orange-100",
+    green: "bg-emerald-50 text-emerald-700 border-emerald-100",
+    purple: "bg-purple-50 text-purple-700 border-purple-100",
+    blue: "bg-blue-50 text-blue-700 border-blue-100"
   };
 
   return (
-    <div className={`${colorMap[color]} p-4 rounded-xl`}>
-      <div className="flex items-center gap-2 mb-1">
-        {icon}
-        <span className="text-xs font-bold uppercase tracking-wide">{label}</span>
+    <div className={`${colorMap[color]} p-4 rounded-2xl border-2`}>
+      <div className="flex items-center gap-2 mb-2">
+        <div className="opacity-50">{icon}</div>
+        <span className="text-[10px] font-black uppercase tracking-widest">{label}</span>
       </div>
-      <div className="text-2xl font-black">{value}</div>
+      <div className="text-3xl font-black tracking-tighter">{value}</div>
     </div>
   );
 }
 
-/**
- * RULE SECTION COMPONENT
- * 
- * Displays a category of rules with consistent styling
- */
 interface RuleSectionProps {
   title: string;
   subtitle: string;
   rules: Rule[];
+  accentColor: string;
   bgColor: string;
-  borderColor: string;
   textColor: string;
 }
 
-function RuleSection({ title, subtitle, rules, bgColor, borderColor, textColor }: RuleSectionProps) {
+function RuleSection({ title, subtitle, rules, accentColor, bgColor, textColor }: RuleSectionProps) {
   if (rules.length === 0) return null;
 
   return (
-    <div className={`${bgColor} p-6 rounded-2xl border ${borderColor}`}>
-      <h3 className={`${textColor} font-black text-sm uppercase tracking-widest mb-1`}>
-        {title}
-      </h3>
-      <p className="text-xs text-slate-600 mb-4">{subtitle}</p>
-      <ul className="space-y-2">
+    <div className="group">
+      <div className="flex items-center gap-4 mb-4">
+         <div className={`w-2 h-8 ${accentColor} rounded-full`}></div>
+         <div>
+            <h3 className="text-lg font-black text-slate-900 tracking-tight">
+              {title}
+            </h3>
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">{subtitle}</p>
+         </div>
+      </div>
+      <ul className="grid grid-cols-1 gap-3">
         {rules.map((item, i) => (
           <li 
             key={i} 
-            className={`bg-white/70 p-4 rounded-xl text-xs font-medium border ${borderColor}`}
+            className={`${bgColor} ${textColor} p-5 rounded-2xl text-[12.5px] font-bold leading-relaxed border-l-8 border-transparent hover:border-slate-900 transition-all shadow-sm`}
           >
             {item.text}
           </li>
