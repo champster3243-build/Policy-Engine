@@ -8,7 +8,7 @@ export default function AgentDashboard() {
   const [data, setData] = useState(null);
   const [jobId, setJobId] = useState(null);
 
-  const handleFileChange = (e) => {
+  const handleFileChange = (e: any) => {
     if (e.target.files) setFile(e.target.files[0]);
   };
 
