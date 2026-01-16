@@ -1,15 +1,15 @@
 /*******************************************************************************************
  *
- * SERVER.JS (v1.5 PARANOID MODE)
+ * SERVER.JS (v1.4 INTEGRATED)
  * ===========================
  *
  * HISTORY:
- * - v1.4: Integrated Supabase.
- * - v1.5 (CURRENT): "Paranoid Mode" to force extraction of all risks/exclusions.
+ * - v1.3.2: Stable Logic + Categorization Fix.
+ * - v1.4 (CURRENT): Added Supabase Persistence (Storage + DB).
  *
  *******************************************************************************************/
 
-console.log("=== SERVER.JS FILE LOADED (v1.5 PARANOID MODE) ===");
+console.log("=== SERVER.JS FILE LOADED (v1.4 INTEGRATED) ===");
 
 // ==========================================================================================
 // ZONE 0: IMPORTS & CONFIGURATION
@@ -20,7 +20,7 @@ import dotenv from "dotenv";
 import multer from "multer";
 import pdf from "pdf-parse";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js'; // <--- NEW
 import { normalizePolicy } from "./services/normalizePolicy.js";
 
 dotenv.config();
@@ -35,7 +35,7 @@ const upload = multer({
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- SUPABASE SETUP ---
+// --- SUPABASE SETUP (NEW) ---
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
   console.warn("⚠️  WARNING: Supabase credentials missing. Persistence disabled.");
 }
@@ -65,7 +65,7 @@ function repairTextGlue(text) {
 }
 
 // ==========================================================================================
-// ZONE 1.5: SUPABASE HELPERS
+// ZONE 1.5: SUPABASE HELPERS (NEW)
 // ==========================================================================================
 
 async function uploadFileToSupabase(file) {
@@ -222,10 +222,7 @@ function createSemanticChunks(text) {
     for (const piece of subChunk(section, 1400, 100)) {
       const raw = piece.trim();
       if (raw.length < 300) continue;
-      
-      // Simple hint logic
-      const hint = raw.toLowerCase().includes("mean") ? "definitions" : "rules";
-      
+      const hint = classifyChunkHint(raw);
       const glued = repairTextGlue(raw);
       const cleaned = hint === "definitions" ? glued : cleanRuleTextSmart(glued);
       if (cleaned.length < 200) continue;
@@ -237,42 +234,117 @@ function createSemanticChunks(text) {
 
 
 // ==========================================================================================
-// ZONE 7: GEMINI (UPDATED: PARANOID MODE)
+// ZONE 4: CLASSIFICATION
 // ==========================================================================================
 
-function getGeminiModel() {
+function isDefinitionChunk(text) {
+  const t = text.toLowerCase();
+  const earlyText = t.slice(0, 150); 
+  return earlyText.includes(" means ") || earlyText.includes(" is defined as ") || t.includes("definitions");
+}
+
+function isHighSignalRuleChunk(text) {
+  const signals = ["we will cover", "excluded", "waiting period", "deductible", "limit", "sum insured"];
+  return signals.some(s => text.toLowerCase().includes(s));
+}
+
+function classifyChunkHint(text) {
+  const t = text.toLowerCase();
+  const defScore = (t.match(/means/g) || []).length;
+  const ruleScore = (t.match(/cover|exclude|limit/g) || []).length;
+  if (defScore >= 2 && defScore >= ruleScore) return "definitions";
+  if (ruleScore >= 2) return "rules";
+  return "mixed";
+}
+
+
+// ==========================================================================================
+// ZONE 5: JSON PARSING
+// ==========================================================================================
+
+function safeJsonParse(rawText) {
+  if (!rawText) return null;
+  const cleaned = rawText.replace(/```json|```/g, "").trim();
+  try { return JSON.parse(cleaned); } catch {}
+  const firstBrace = cleaned.indexOf("{"), lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace <= firstBrace) return null;
+  try { return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)); } catch { return null; }
+}
+
+
+// ==========================================================================================
+// ZONE 6: QUALITY GATES
+// ==========================================================================================
+
+function isJunkRule(text) {
+  const t = String(text || "").trim();
+  if (t.length < 10) return true;
+  if (/^[\d\W]+$/.test(t)) return true;
+  if (t.toLowerCase().includes("upload pdf")) return true;
+  return false;
+}
+
+function isGoodDefinitionPair(term, definition) {
+  const t = String(term).trim();
+  const d = String(definition).trim();
+  if (t.length < 3 || d.length < 10) return false;
+  if (t.toLowerCase().includes("accident accident")) return false;
+  return true;
+}
+
+
+// ==========================================================================================
+// ZONE 7: GEMINI
+// ==========================================================================================
+
+function getGeminiModel(definitionMode, maxTokens) {
   return genAI.getGenerativeModel({
-    model: "gemini-2.0-flash", // Updated to latest flash for speed
-    generationConfig: { maxOutputTokens: 2000, temperature: 0.1 }
+    model: "gemini-2.5-flash",
+    generationConfig: { maxOutputTokens: maxTokens, temperature: 0 }
   });
 }
 
-// NEW: Aggressive extraction prompt
-function buildParanoidPrompt(text) {
-  return `
-    ROLE: Insurance Auditor hunting for GAPS and RISKS.
-    TASK: Extract text VERBATIM from the document snippets below.
-    
-    TARGETS TO EXTRACT (Raw Text Only):
-    1. EXCLUSIONS: Anything saying "Not Covered", "We will not pay", "Excludes", "General Exclusions".
-    2. SPECIFIC RISKS: Alcohol, Drugs, Obesity, Cosmetic Surgery, Pregnancy, War, Nuclear, Breach of Law, Hazardous Sports.
-    3. WAITING PERIODS: "30 days", "24 months", "36 months", "4 years".
-    4. LIMITS: Sub-limits (e.g., "Cataract limit 40k"), Co-payments ("20% co-pay").
+function buildPrompt(mode, text, isBatch = false) {
+  if (mode) {
+    if (isBatch) return `Extract up to 4 definitions. JSON ONLY. {"type":"definition_batch","definitions":[{"term":"...","definition":"..."}]}. TEXT: ${text}`;
+    return `Extract ONE definition. JSON ONLY. {"type":"definition","term":"...","definition":"..."}. TEXT: ${text}`;
+  }
+  
+  const ruleInstructions = `
+  Extract insurance rules. Return valid JSON.
+  VALID CATEGORIES:
+  - "coverage" (What is covered)
+  - "exclusion" (What is NOT covered)
+  - "waiting_period" (Time before cover starts)
+  - "financial_limit" (Sub-limits, Co-pay, Deductibles, Sum Insured reduction)
+  - "claim_rejection" (Reasons for claim denial, fraud, documentation)`;
 
-    TEXT TO ANALYZE:
-    "${text.replace(/"/g, "'").substring(0, 3000)}"
+  if (isBatch) return `${ruleInstructions}\nExtract up to 4 rules.\nFormat: {"type":"rule_batch","rules":[{"type":"CATEGORY","text":"FULL RULE TEXT"}]}\nTEXT: ${text}`;
+  return `${ruleInstructions}\nExtract ONE rule. Format: {"type":"CATEGORY","rule":"FULL RULE TEXT"}\nTEXT: ${text}`;
+}
 
-    OUTPUT FORMAT (JSON ONLY, NO MARKDOWN):
-    {
-      "exclusions": ["raw text from policy..."],
-      "waiting_periods": ["raw text..."],
-      "financial_limits": ["raw text..."]
-    }
+function routeParsed(parsed, collected) {
+  if (!parsed || parsed.type === "none") return { storedAny: false };
+  let stored = false;
 
-    CRITICAL:
-    - If you see a list of exclusions, extract ALL OF THEM. Do not summarize.
-    - If nothing found, return empty arrays.
-  `;
+  const addDef = (t, d) => { if (isGoodDefinitionPair(t, d)) { collected.definitions[t] = d; stored = true; }};
+  const addRule = (type, txt) => {
+    if (isJunkRule(txt)) return;
+    stored = true;
+    if (type === "coverage") collected.coverage.push(txt);
+    else if (type === "exclusion") collected.exclusions.push(txt);
+    else if (type === "waiting_period") collected.waiting_periods.push(txt);
+    else if (type === "financial_limit") collected.financial_limits.push(txt);
+    else if (type === "claim_rejection") collected.claim_rejection_conditions.push(txt);
+    else collected.coverage.push(txt);
+  };
+
+  if (Array.isArray(parsed.definitions)) parsed.definitions.forEach(d => addDef(d.term, d.definition));
+  else if (parsed.term) addDef(parsed.term, parsed.definition);
+  if (Array.isArray(parsed.rules)) parsed.rules.forEach(r => addRule(r.type, r.text || r.rule));
+  else if (parsed.rule) addRule(parsed.type, parsed.rule);
+
+  return { storedAny: stored };
 }
 
 
@@ -297,88 +369,84 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
     // --- 2. PROCESSING ---
     const data = await pdf(req.file.buffer);
     const policyMeta = extractPolicyMetadata(data.text);
-    
-    // --- 2a. CHUNK & PROCESS DIRECTLY ---
     const chunks = createSemanticChunks(data.text);
     console.log(`TOTAL CHUNKS: ${chunks.length}`);
 
-    const collected = { 
-        exclusions: [], 
-        waiting_periods: [], 
-        financial_limits: [] 
-    };
+    const collected = { definitions: {}, coverage: [], exclusions: [], waiting_periods: [], financial_limits: [], claim_rejection_conditions: [] };
+    let parsedChunks = 0, failedChunks = 0;
+    const pass2Candidates = [];
 
-    let processedCount = 0;
-    let failedChunks = 0;
-
-    // Simple Worker Function
-    const processChunk = async (chunk, index) => {
-        // Skip obvious junk (definitions or headers) to save API calls
-        if (chunk.hint === 'definitions' && !chunk.text.toLowerCase().includes('exclude')) return;
-        
-        console.log(`[Worker] Processing Chunk ${index + 1}/${chunks.length}`);
-        
-        try {
-            const model = getGeminiModel();
-            const prompt = buildParanoidPrompt(chunk.text);
-            
-            // Call Gemini
-            const result = await withTimeout(model.generateContent(prompt), 25000);
-            const responseText = result.response.text();
-
-            // Clean & Parse
-            const cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-            const parsed = JSON.parse(cleaned);
-
-            // Store Data
-            if (parsed.exclusions?.length) collected.exclusions.push(...parsed.exclusions);
-            if (parsed.waiting_periods?.length) collected.waiting_periods.push(...parsed.waiting_periods);
-            if (parsed.financial_limits?.length) collected.financial_limits.push(...parsed.financial_limits);
-            
-            processedCount++;
-        } catch (err) {
-            console.error(`[Chunk ${index} Error]:`, err.message); // Log error but keep going
+    // Worker Pool Function
+    const runWorkerPool = async (tasks, concurrency, isPass2 = false) => {
+      let index = 0;
+      const workers = [];
+      const worker = async (id) => {
+        while (true) {
+          const i = index++;
+          if (i >= tasks.length) break;
+          const task = tasks[i];
+          const defMode = task.hint === "definitions" || isDefinitionChunk(task.text);
+          console.log(`[${isPass2 ? 'P2' : 'P1'} Worker ${id}] Processing ${i+1}/${tasks.length} | Mode: ${defMode ? 'DEF' : 'RULE'}`);
+          
+          const model = getGeminiModel(defMode, isPass2 ? 4096 : 1024);
+          const prompt = buildPrompt(defMode, task.text, isPass2);
+          try {
+            const result = await withTimeout(model.generateContent(prompt), 30000);
+            const parsed = safeJsonParse(result.response.text());
+            if (!parsed || parsed.type === "none") {
+              if (!isPass2 && (defMode || isHighSignalRuleChunk(task.text))) pass2Candidates.push(task);
+            } else {
+              const { storedAny } = routeParsed(parsed, collected);
+              if (storedAny) parsedChunks++;
+              if (!isPass2 && storedAny && isHighSignalRuleChunk(task.text)) pass2Candidates.push(task);
+            }
+          } catch (e) {
             failedChunks++;
+          }
+          await sleep(100);
         }
+      };
+      for (let w = 0; w < concurrency; w++) workers.push(worker(w + 1));
+      await Promise.all(workers);
     };
 
-    // Run in batches of 5 to respect Rate Limits
-    const BATCH_SIZE = 5;
-    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-        const batch = chunks.slice(i, i + BATCH_SIZE);
-        await Promise.all(batch.map((chunk, idx) => processChunk(chunk, i + idx)));
-        await sleep(500); // Tiny breather for the API
-    }
+    await runWorkerPool(chunks, 5); 
+    console.log(`PASS 1 DONE. Candidates for P2: ${pass2Candidates.length}`);
 
-    console.log(`PROCESSING DONE. Extracted: ${collected.exclusions.length} exclusions.`);
+    if (pass2Candidates.length > 0) {
+      const uniqueTasks = [...new Map(pass2Candidates.map(item => [item.id, item])).values()];
+      console.log(`STARTING PASS 2 with ${uniqueTasks.length} chunks...`);
+      await runWorkerPool(uniqueTasks, 5, true);
+    }
 
     // --- 3. FINALIZE ---
     const dedup = (arr) => [...new Set(arr.map(s => String(s).trim()))];
+    collected.coverage = dedup(collected.coverage);
     collected.exclusions = dedup(collected.exclusions);
     collected.waiting_periods = dedup(collected.waiting_periods);
     collected.financial_limits = dedup(collected.financial_limits);
+    collected.claim_rejection_conditions = dedup(collected.claim_rejection_conditions);
 
-    // Prepare structure for CPDM and Frontend
+    const cpdm = buildCPDM(policyMeta, collected);
     const normalized = normalizePolicy([{
+        coverage: collected.coverage,
         exclusions: collected.exclusions,
         waiting_periods: collected.waiting_periods,
         financials: collected.financial_limits,
-        coverage: [], // We focused on risk in this version
-        claim_risks: []
+        claim_risks: collected.claim_rejection_conditions
     }]);
-
-    const cpdm = buildCPDM(policyMeta, collected);
 
     // --- 4. SAVE RESULT ---
     console.log("3. Saving Results...");
-    await completeJobRecord(job.id, cpdm, policyMeta, { parsedChunks: processedCount, failedChunks });
+    await completeJobRecord(job.id, cpdm, policyMeta, { parsedChunks, failedChunks });
     console.log("   -> Saved.");
 
     res.json({
       message: "Analysis Complete",
       jobId: job.id,
       fileUrl: publicUrl,
-      meta: { ...policyMeta, totalChunks: chunks.length, parsedChunks: processedCount, failedChunks },
+      meta: { ...policyMeta, totalChunks: chunks.length, parsedChunks, failedChunks },
+      definitions: collected.definitions,
       normalized,
       cpdm
     });
@@ -394,13 +462,17 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
 // ZONE 9: CPDM BUILDER
 // ==========================================================================================
 function buildCPDM(policyMeta, collected) {
+  const definitions = Object.entries(collected.definitions).map(([term, definition]) => ({ term, definition }));
+  const coverages = collected.coverage.map(text => ({ category: "coverage", text }));
   const exclusions = collected.exclusions.map(text => ({ category: "exclusion", text }));
   const waitingPeriods = collected.waiting_periods.map(text => ({ category: "waiting_period", text }));
   const limits = collected.financial_limits.map(text => ({ category: "financial_limit", text }));
+  const claimRisks = collected.claim_rejection_conditions.map(text => ({ category: "claim_rejection", text }));
   
   return {
     meta: policyMeta,
-    rules: [ ...exclusions, ...waitingPeriods, ...limits ]
+    definitions,
+    rules: [ ...coverages, ...exclusions, ...waitingPeriods, ...limits, ...claimRisks ]
   };
 }
 
