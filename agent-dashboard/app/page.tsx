@@ -1,13 +1,13 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════════════════
- * POLICY ANALYSIS AGENT DASHBOARD - UI ENHANCED & EXPORT FIXED
+ * POLICY ANALYSIS AGENT DASHBOARD - FINAL EXPORT FIX (CSS INJECTION)
  * ═══════════════════════════════════════════════════════════════════════════════════════
  * * PURPOSE: Frontend interface for insurance policy analysis
  * * FEATURES:
  * 1. PDF Upload with drag-and-drop
  * 2. Animated progress bar during analysis
  * 3. Categorized results display (Exclusions, Waiting Periods, etc.)
- * 4. PDF Export of analysis results (FIXED: Full container capture)
+ * 4. PDF Export of analysis results (FIXED: CSS Injection to bypass LAB colors)
  * 5. Caching indicator (shows if results from library)
  * 6. Statistics dashboard
  * * STATE MANAGEMENT:
@@ -108,8 +108,9 @@ export default function AgentDashboard() {
   };
 
   /**
-   * exportPDF - NUCLEAR FIX for Lab Colors
-   * Manually sanitizes the DOM clone to remove all modern CSS variables
+   * exportPDF - CSS INJECTION FIX
+   * Injects a style block that forces HEX colors for all Tailwind classes used.
+   * This prevents the browser from computing 'lab()' or 'oklch()' colors.
    */
   const exportPDF = async () => {
     const element = document.getElementById("analysis-results");
@@ -119,81 +120,96 @@ export default function AgentDashboard() {
       return;
     }
 
-    console.info("📸 Capturing audit report (Sanitizing Colors)...");
+    console.info("📸 Capturing audit report (Injecting Safe CSS)...");
     
     try {
-      // Use window.scrollTo(0,0) or capture with scroll options to ensure full height
       const canvas = await html2canvas(element, { 
         scale: 2,           
         useCORS: true,      
         logging: false,
-        backgroundColor: "#ffffff", // Ensure white background in PDF
+        backgroundColor: "#ffffff",
         windowWidth: element.scrollWidth,
         windowHeight: element.scrollHeight,
-        // CRITICAL: Handle color functions that crash html2canvas
+        
         onclone: (clonedDoc) => {
-            const results = clonedDoc.getElementById("analysis-results");
-            if (results) {
-              // Flatten shadows and force solid colors for print safety
-              results.style.boxShadow = "none";
-              results.style.backgroundColor = "#ffffff";
-              results.style.color = "#000000";
+          const results = clonedDoc.getElementById("analysis-results");
+          if (results) {
+            // 1. Hard reset container
+            results.style.backgroundColor = "#ffffff";
+            results.style.color = "#000000";
+            
+            // 2. CSS INJECTION: Define safe HEX values for every class we use
+            const style = clonedDoc.createElement('style');
+            style.innerHTML = `
+              * { box-shadow: none !important; text-shadow: none !important; }
+              .bg-slate-950 { background-color: #020617 !important; }
+              .bg-slate-900 { background-color: #0f172a !important; }
+              .bg-slate-100 { background-color: #f1f5f9 !important; }
+              .bg-slate-50 { background-color: #f8fafc !important; }
+              .bg-white { background-color: #ffffff !important; }
+              .bg-red-50 { background-color: #fef2f2 !important; }
+              .bg-amber-50 { background-color: #fffbeb !important; }
+              .bg-blue-50 { background-color: #eff6ff !important; }
+              .bg-emerald-50 { background-color: #ecfdf5 !important; }
+              .bg-purple-50 { background-color: #faf5ff !important; }
+              .bg-indigo-600 { background-color: #4f46e5 !important; }
+              .bg-emerald-100 { background-color: #d1fae5 !important; }
+              
+              .text-slate-900 { color: #0f172a !important; }
+              .text-white { color: #ffffff !important; }
+              .text-slate-400 { color: #94a3b8 !important; }
+              .text-slate-500 { color: #64748b !important; }
+              .text-slate-600 { color: #475569 !important; }
+              .text-slate-700 { color: #334155 !important; }
+              .text-indigo-600 { color: #4f46e5 !important; }
+              .text-emerald-700 { color: #047857 !important; }
+              .text-red-950 { color: #450a0a !important; }
+              .text-amber-950 { color: #451a03 !important; }
+              .text-blue-950 { color: #172554 !important; }
+              .text-purple-950 { color: #3b0764 !important; }
+              
+              .border-slate-100 { border-color: #f1f5f9 !important; }
+              .border-slate-200 { border-color: #e2e8f0 !important; }
+              .border-red-100 { border-color: #fee2e2 !important; }
+              .border-amber-100 { border-color: #fef3c7 !important; }
+              .border-blue-100 { border-color: #dbeafe !important; }
+              .border-emerald-100 { border-color: #d1fae5 !important; }
+              .border-purple-100 { border-color: #f3e8ff !important; }
+            `;
+            clonedDoc.head.appendChild(style);
 
-              const allElements = results.querySelectorAll('*');
-              allElements.forEach((el) => {
-                  const htmlEl = el as HTMLElement;
-                  const style = window.getComputedStyle(htmlEl);
-                  const classes = htmlEl.className.toString();
-
-                  // Remove shadows from cards for cleaner PDF
-                  htmlEl.style.boxShadow = "none";
-                  htmlEl.style.textShadow = "none";
-
-                  // MANUAL COLOR MAPPING for Backgrounds
-                  if (classes.includes("bg-red-50")) htmlEl.style.backgroundColor = "#fef2f2";
-                  else if (classes.includes("bg-amber-50")) htmlEl.style.backgroundColor = "#fffbeb";
-                  else if (classes.includes("bg-blue-50")) htmlEl.style.backgroundColor = "#eff6ff";
-                  else if (classes.includes("bg-emerald-50")) htmlEl.style.backgroundColor = "#ecfdf5";
-                  else if (classes.includes("bg-purple-50")) htmlEl.style.backgroundColor = "#faf5ff";
-                  else if (classes.includes("bg-slate-50")) htmlEl.style.backgroundColor = "#f8fafc";
-                  else if (classes.includes("bg-slate-100")) htmlEl.style.backgroundColor = "#f1f5f9";
-                  else if (classes.includes("bg-indigo-600")) htmlEl.style.backgroundColor = "#4f46e5";
-                  else if (classes.includes("bg-emerald-100")) htmlEl.style.backgroundColor = "#d1fae5";
-                  else if (style.backgroundColor.includes("lab(")) htmlEl.style.backgroundColor = "#ffffff";
-
-                  // MANUAL COLOR MAPPING for Text
-                  if (classes.includes("text-red-950")) htmlEl.style.color = "#450a0a";
-                  else if (classes.includes("text-amber-950")) htmlEl.style.color = "#451a03";
-                  else if (classes.includes("text-blue-950")) htmlEl.style.color = "#172554";
-                  else if (classes.includes("text-purple-950")) htmlEl.style.color = "#3b0764";
-                  else if (classes.includes("text-slate-900")) htmlEl.style.color = "#0f172a";
-                  else if (classes.includes("text-slate-700")) htmlEl.style.color = "#334155";
-                  else if (classes.includes("text-white")) htmlEl.style.color = "#ffffff";
-                  else if (classes.includes("text-emerald-700")) htmlEl.style.color = "#047857";
-                  else if (classes.includes("text-indigo-600")) htmlEl.style.color = "#4f46e5";
-                  else if (style.color.includes("lab(")) htmlEl.style.color = "#000000";
-
-                  // Fallback Borders
-                  if (style.borderColor.includes("lab(")) htmlEl.style.borderColor = "#e2e8f0";
-              });
-            }
+            // 3. Fallback Iteration (Just in case)
+            const allElements = results.querySelectorAll('*');
+            allElements.forEach((el) => {
+               const htmlEl = el as HTMLElement;
+               // If any style still computes to lab/oklch, force it to black/white
+               const computed = window.getComputedStyle(htmlEl);
+               if (computed.backgroundColor.includes('lab') || computed.backgroundColor.includes('oklch')) {
+                   htmlEl.style.backgroundColor = '#ffffff';
+               }
+               if (computed.color.includes('lab') || computed.color.includes('oklch')) {
+                   htmlEl.style.color = '#000000';
+               }
+               if (computed.borderColor.includes('lab') || computed.borderColor.includes('oklch')) {
+                   htmlEl.style.borderColor = '#e2e8f0';
+               }
+            });
+          }
         }
       });
 
       const pdf = new jsPDF("p", "mm", "a4");
-      const imgWidth = 210; // A4 width in mm
-      const pageHeight = 297; // A4 height in mm
+      const imgWidth = 210; 
+      const pageHeight = 297; 
       const imgHeight = (canvas.height * imgWidth) / canvas.width;
       
       let heightLeft = imgHeight;
       let position = 0;
       const imgData = canvas.toDataURL("image/png");
 
-      // Add first page
       pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
       heightLeft -= pageHeight;
 
-      // Handle multi-page PDF if content is long
       while (heightLeft >= 0) {
         position = heightLeft - imgHeight;
         pdf.addPage();
@@ -229,7 +245,7 @@ export default function AgentDashboard() {
     <div className="min-h-screen bg-slate-100 p-8 text-slate-900 font-sans">
       <div className="max-w-6xl mx-auto space-y-8">
         
-        {/* HEADER SECTION - High Contrast Dark Mode */}
+        {/* HEADER SECTION */}
         <div className="bg-slate-950 p-8 rounded-2xl shadow-2xl flex justify-between items-center text-white border border-slate-800">
           <div className="flex items-center gap-5">
             <div className="bg-indigo-600 p-3 rounded-xl shadow-lg shadow-indigo-500/20 ring-1 ring-white/10">
@@ -252,7 +268,7 @@ export default function AgentDashboard() {
         {/* MAIN CONTENT GRID */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
-          {/* LEFT COLUMN: UPLOAD CONTROLS (Spans 4 columns) */}
+          {/* LEFT COLUMN: UPLOAD CONTROLS */}
           <div className="lg:col-span-4 space-y-6">
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
               <h2 className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400 flex items-center gap-2 border-b border-slate-100 pb-4">
@@ -321,7 +337,7 @@ export default function AgentDashboard() {
             )}
           </div>
 
-          {/* RIGHT COLUMN: ANALYSIS RESULTS (Spans 8 columns) */}
+          {/* RIGHT COLUMN: ANALYSIS RESULTS */}
           <div className="lg:col-span-8 space-y-6">
             {data ? (
               <>
