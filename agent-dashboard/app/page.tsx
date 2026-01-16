@@ -8,9 +8,10 @@ import {
   Shield, 
   AlertOctagon, 
   Download, 
-  Loader2 
+  Loader2,
+  CheckCircle,
+  FileCheck
 } from "lucide-react";
-// Import the new libraries
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 
@@ -19,12 +20,12 @@ export default function AgentDashboard() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
 
-  // Update this with your actual Render URL
   const API_URL = "https://policy-engine-api.onrender.com";
 
   const handleUpload = async () => {
     if (!file) return;
     setLoading(true);
+    setData(null);
 
     const formData = new FormData();
     formData.append("pdf", file);
@@ -38,22 +39,20 @@ export default function AgentDashboard() {
       setData(result);
     } catch (e) {
       console.error("Upload failed:", e);
-      alert("Analysis failed. Check if the backend is running.");
+      alert("Analysis failed.");
     } finally {
       setLoading(false);
     }
   };
 
-  // BABY STEP FEATURE: PDF Export Logic
   const exportPDF = async () => {
     const element = document.getElementById("analysis-results");
     if (!element) return;
     
-    // Capture the dashboard as an image
     const canvas = await html2canvas(element, { 
       scale: 2, 
       useCORS: true,
-      logging: false 
+      backgroundColor: "#f8fafc"
     });
     
     const imgData = canvas.toDataURL("image/png");
@@ -62,83 +61,129 @@ export default function AgentDashboard() {
     const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
     
     pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
-    pdf.save("Policy-Analysis-Report.pdf");
+    pdf.save(`Report-${data?.meta?.policy_name || 'Policy'}.pdf`);
   };
 
   return (
     <div className="min-h-screen bg-slate-50 p-8 font-sans text-slate-900">
-      <div className="max-w-5xl mx-auto space-y-8">
+      <div className="max-w-6xl mx-auto space-y-8">
         
         {/* HEADER */}
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">Agent Command Center</h1>
-            <p className="text-slate-500 mt-1">Upload competitor policies to find gaps instantly.</p>
+            <h1 className="text-3xl font-bold tracking-tight text-slate-900">Agent Command Center</h1>
+            <p className="text-slate-500 mt-1">Upload policies to extract critical risks and waiting periods.</p>
           </div>
-          <div className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-semibold border border-green-200">
-            System Status: ONLINE
+          <div className="flex flex-col items-end gap-2">
+             <div className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-semibold border border-green-200">
+              System Status: ONLINE
+            </div>
+            {data?.isCached && (
+               <div className="flex items-center gap-1 text-blue-600 text-xs font-medium">
+                 <FileCheck className="w-3 h-3" /> Report from Library
+               </div>
+            )}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           
           {/* UPLOAD SECTION */}
-          <div className="col-span-1 space-y-4">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <div className="lg:col-span-1 space-y-4">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
               <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <Upload className="w-5 h-5 text-blue-600" /> Upload Policy
+                <Upload className="w-5 h-5 text-blue-600" /> Policy Analysis
               </h2>
-              <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 flex flex-col items-center justify-center text-center hover:bg-slate-50 transition-colors cursor-pointer relative">
+              <div className="border-2 border-dashed border-slate-200 rounded-xl p-8 flex flex-col items-center justify-center text-center hover:border-blue-300 hover:bg-blue-50/30 transition-all cursor-pointer relative">
                 <input 
                   type="file" 
                   accept=".pdf"
                   onChange={(e) => setFile(e.target.files?.[0] || null)}
                   className="absolute inset-0 opacity-0 cursor-pointer"
                 />
-                <FileText className="w-10 h-10 text-slate-400 mb-2" />
+                <FileText className="w-10 h-10 text-slate-300 mb-2" />
                 <p className="text-sm text-slate-600 font-medium">
-                  {file ? file.name : "Click to select PDF"}
+                  {file ? file.name : "Drop PDF or Click to Select"}
                 </p>
               </div>
+
+              {/* PROGRESS BAR (BABY STEP 2) */}
+              {loading && (
+                <div className="mt-6 space-y-2">
+                  <div className="flex justify-between text-xs font-medium text-slate-500">
+                    <span>AI Auditor is reading...</span>
+                    <span className="animate-pulse">Processing Chunks</span>
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                    <div className="bg-blue-600 h-full w-full origin-left animate-[progress_3s_ease-in-out_infinite]"></div>
+                  </div>
+                </div>
+              )}
 
               <button 
                 onClick={handleUpload}
                 disabled={loading || !file}
-                className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                className="mt-6 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-blue-200 flex items-center justify-center gap-2 disabled:opacity-50 disabled:shadow-none"
               >
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Analyze Policy"}
+                {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Run Deep Analysis"}
               </button>
             </div>
           </div>
 
           {/* RESULTS SECTION */}
-          <div className="col-span-2">
+          <div className="lg:col-span-2">
             {data ? (
-              <div className="space-y-4">
-                {/* Export Button */}
-                <button 
-                  onClick={exportPDF}
-                  className="flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg text-slate-600 hover:bg-slate-50 transition-all text-sm font-semibold shadow-sm"
-                >
-                  <Download className="w-4 h-4 text-blue-600" /> Download Report PDF
-                </button>
+              <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="flex justify-end">
+                  <button 
+                    onClick={exportPDF}
+                    className="flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-xl text-slate-700 hover:bg-slate-50 transition-all text-sm font-bold shadow-sm"
+                  >
+                    <Download className="w-4 h-4 text-blue-600" /> Export PDF Report
+                  </button>
+                </div>
 
-                {/* ID added here for the PDF capture */}
-                <div id="analysis-results" className="space-y-6 bg-slate-50 p-2">
-                  <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <h2 className="text-xl font-bold">{data.meta?.policy_name || "Policy Results"}</h2>
-                    <p className="text-sm text-slate-500">Insurer: {data.meta?.insurer || "N/A"}</p>
+                <div id="analysis-results" className="space-y-6">
+                  {/* Summary Stats */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
+                      <p className="text-xs text-slate-500 uppercase font-bold tracking-wider">Exclusions</p>
+                      <p className="text-2xl font-black text-red-600">{data.cpdm?.rules?.filter((r:any)=>r.category === 'exclusion').length || 0}</p>
+                    </div>
+                    <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
+                      <p className="text-xs text-slate-500 uppercase font-bold tracking-wider">Waiting Periods</p>
+                      <p className="text-2xl font-black text-amber-600">{data.cpdm?.rules?.filter((r:any)=>r.category === 'waiting_period').length || 0}</p>
+                    </div>
+                    <div className="bg-white p-4 rounded-xl border border-slate-200 text-center">
+                      <p className="text-xs text-slate-500 uppercase font-bold tracking-wider">Definitions</p>
+                      <p className="text-2xl font-black text-blue-600">{Object.keys(data.definitions || {}).length}</p>
+                    </div>
+                  </div>
+
+                  {/* Identity Card */}
+                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <h2 className="text-xl font-black text-slate-900 leading-tight">{data.meta?.policy_name || "Extracted Policy Details"}</h2>
+                    <div className="mt-4 flex flex-wrap gap-y-2 gap-x-6 text-sm">
+                      <div className="flex items-center gap-2 text-slate-600">
+                        <Shield className="w-4 h-4 text-blue-500" />
+                        <span className="font-semibold">Insurer:</span> {data.meta?.insurer || "N/A"}
+                      </div>
+                      <div className="flex items-center gap-2 text-slate-600">
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        <span className="font-semibold">Type:</span> {data.meta?.document_type || "N/A"}
+                      </div>
+                    </div>
                   </div>
 
                   {/* Exclusions (Red) */}
-                  <div className="bg-red-50 p-6 rounded-xl border border-red-100">
-                    <h3 className="text-red-800 font-bold flex items-center gap-2 mb-4">
-                      <AlertOctagon className="w-5 h-5" /> Critical Exclusions
+                  <div className="bg-red-50 p-6 rounded-2xl border border-red-100 shadow-sm">
+                    <h3 className="text-red-800 font-black flex items-center gap-2 mb-6 text-lg uppercase tracking-wide">
+                      <AlertOctagon className="w-6 h-6" /> Critical Exclusions
                     </h3>
-                    <ul className="space-y-3">
+                    <ul className="space-y-4">
                       {data.cpdm?.rules?.filter((r: any) => r.category === "exclusion").map((item: any, idx: number) => (
-                        <li key={idx} className="flex gap-3 text-red-700 text-sm items-start">
-                          <span className="mt-1.5 w-1.5 h-1.5 bg-red-400 rounded-full shrink-0"></span>
+                        <li key={idx} className="flex gap-4 text-red-900 text-sm leading-relaxed bg-white/50 p-3 rounded-lg border border-red-50">
+                          <span className="mt-1 w-2 h-2 bg-red-500 rounded-full shrink-0 shadow-sm shadow-red-200"></span>
                           {item.text}
                         </li>
                       ))}
@@ -146,14 +191,14 @@ export default function AgentDashboard() {
                   </div>
 
                   {/* Waiting Periods (Yellow) */}
-                  <div className="bg-amber-50 p-6 rounded-xl border border-amber-100">
-                    <h3 className="text-amber-800 font-bold flex items-center gap-2 mb-4">
-                      <AlertTriangle className="w-5 h-5" /> Waiting Periods
+                  <div className="bg-amber-50 p-6 rounded-2xl border border-amber-100 shadow-sm">
+                    <h3 className="text-amber-900 font-black flex items-center gap-2 mb-6 text-lg uppercase tracking-wide">
+                      <AlertTriangle className="w-6 h-6" /> Waiting Periods
                     </h3>
-                    <ul className="space-y-3">
+                    <ul className="space-y-4">
                       {data.cpdm?.rules?.filter((r: any) => r.category === "waiting_period").map((item: any, idx: number) => (
-                        <li key={idx} className="flex gap-3 text-amber-900 text-sm">
-                          <span className="mt-1.5 w-1.5 h-1.5 bg-amber-400 rounded-full shrink-0"></span>
+                        <li key={idx} className="flex gap-4 text-amber-900 text-sm leading-relaxed bg-white/50 p-3 rounded-lg border border-amber-50">
+                          <span className="mt-1 w-2 h-2 bg-amber-500 rounded-full shrink-0 shadow-sm shadow-amber-200"></span>
                           {item.text}
                         </li>
                       ))}
@@ -162,14 +207,22 @@ export default function AgentDashboard() {
                 </div>
               </div>
             ) : (
-              <div className="h-full flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50 min-h-[400px]">
-                <Shield className="w-16 h-16 mb-4 opacity-20" />
-                <p>Upload a policy to begin analysis</p>
+              <div className="h-full flex flex-col items-center justify-center text-slate-300 border-2 border-dashed border-slate-200 rounded-3xl bg-white/50 min-h-[500px]">
+                <Shield className="w-20 h-20 mb-4 opacity-10" />
+                <p className="font-bold text-slate-400">Policy Results will appear here</p>
+                <p className="text-sm text-slate-300">Upload a PDF on the left to start</p>
               </div>
             )}
           </div>
         </div>
       </div>
+      <style jsx global>{`
+        @keyframes progress {
+          0% { transform: scaleX(0); }
+          50% { transform: scaleX(0.7); }
+          100% { transform: scaleX(1); }
+        }
+      `}</style>
     </div>
   );
 }
