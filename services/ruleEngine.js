@@ -1,22 +1,28 @@
 /*******************************************************************************************
- * ruleEngine.js (v4.4 - FINAL STABLE SYNTAX)
+ * ruleEngine.js (v4.3 - STABLE SECTION-STATE AUTOMATON)
  * =========================================================================================
- * * PURPOSE: Extracts structured rules using Section-State logic.
- * * FIX: Replaced all fragile regex literals with robust string-based patterns.
+ * PURPOSE:
+ * Extracts rules using a Document State Machine. It identifies "Zones" (Headers)
+ * and aggregates fragmented lines into complete, context-aware rules.
+ *
+ * FIXES in v4.3:
+ * - SYNTAX: Fixed the malformed regex literal that caused the server crash.
+ * - LOGIC: Preserved the 'Section-State' buffering to fix sentence truncation.
  *******************************************************************************************/
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
 // SECTION 1: CONSTANTS & CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
+// Mappings of OCR-messy headers to Clean Categories
 const SECTION_MAP = {
   "waiting period": "waiting_periods",
-  "waiting peridos": "waiting_periods",
+  "waiting peridos": "waiting_periods", // Common OCR typo
   "exclusions": "exclusions",
   "specific exclusions": "exclusions",
   "what is not covered": "exclusions",
   "financial limits": "financial_limits",
-  "fin limite": "financial_limits",
+  "fin limite": "financial_limits", // OCR typo seen in logs
   "fin limits": "financial_limits",
   "sub-limits": "financial_limits",
   "coverage": "coverage",
@@ -27,39 +33,66 @@ const SECTION_MAP = {
   "risk factors": "claim_rejection",
 };
 
+// Terms that indicate a line is garbage/noise
 const GARBAGE_TERMS = [
-  "total rules", "page", "annexure", "list i", "list ii", "irda", "reg no",
-  "cin:", "uin:", "corporate office", "registered office", "sum insured",
-  "premium", "policy period", "schedule of benefits", "contents",
-  "authorized signatory", "stamp", "signature",
+  "total rules",
+  "page",
+  "annexure",
+  "list i",
+  "list ii",
+  "irda",
+  "reg no",
+  "cin:",
+  "uin:",
+  "corporate office",
+  "registered office",
+  "sum insured",
+  "premium",
+  "policy period",
+  "schedule of benefits",
+  "contents",
+  "authorized signatory",
+  "stamp",
+  "signature",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
 // SECTION 2: TEXT UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Normalizes raw PDF text.
+ * FIX: Uses valid Regex literals (no malformed /.../ patterns).
+ */
 function normalizeTextStream(text) {
   if (!text) return "";
 
-  // Safe Regex Construction to avoid parser errors
-  const sourceTag = new RegExp("\\", "g");
-  const forwardSlash = new RegExp("/", "g"); // Replaces literal / 
-  const hyphenFix = new RegExp("([a-z])-\\n([a-z])", "ig");
-
-  return text
-    .replace(/\r\n/g, "\n")
-    .replace(sourceTag, "") 
-    .replace(forwardSlash, "") 
-    .replace(hyphenFix, "$1$2")
-    .replace(/[ \t]+/g, " ")
+  return String(text)
+    .replace(/\r\n/g, "\n")                  // Standardize newlines
+    .replace(/\r/g, "\n")                    // Handle stray CR
+    .replace(/\u0000/g, "")                  // Remove null bytes (sometimes from PDF extractors)
+    .replace(/\//g, "")                      // FIXED: Remove forward slashes safely
+    .replace(/([a-z])-\n([a-z])/gi, "$1$2")  // Fix hyphenation across lines
+    .replace(/[ \t]+/g, " ")                 // Collapse multiple spaces
+    .replace(/\n{3,}/g, "\n\n")              // Collapse excessive newlines
     .trim();
 }
 
+/**
+ * Checks if a line is likely a Section Header.
+ * Uses fuzzy matching to catch "FIN LIMITE" or "WAITING PERIDOS".
+ */
 function identifySectionHeader(line) {
-  const clean = line.toLowerCase().replace(/[^a-z\s]/g, "").trim();
+  const clean = String(line || "")
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
   if (clean.length < 3 || clean.length > 40) return null;
 
   for (const [key, category] of Object.entries(SECTION_MAP)) {
+    // Exact match or high-confidence substring match
     if (clean === key || (clean.includes(key) && clean.length < key.length + 10)) {
       return category;
     }
@@ -67,11 +100,18 @@ function identifySectionHeader(line) {
   return null;
 }
 
+/**
+ * Checks if a line starts a new rule (Bullet point, Number, or abrupt start).
+ */
 function isNewRuleStart(line) {
-  const l = line.trim();
+  const l = String(line || "").trim();
+
   // Bullets: >, -, *, •, 1., a), i.
   if (/^([>•\-*]|\d+\.|[a-zA-Z]\)|\([a-z]\)|[ivx]+\.)/.test(l)) return true;
+
+  // Capital letter start (heuristic for new sentence in lists)
   if (/^[A-Z][^a-z]{0,2}/.test(l) && l.length > 5) return true;
+
   return false;
 }
 
@@ -94,56 +134,63 @@ function runRuleBasedExtraction(rawText) {
 
   if (!text) return results;
 
-  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
 
+  // STATE VARIABLES
   let currentSection = null;
   let ruleBuffer = "";
-  const processedRules = new Set();
+  const processedRules = new Set(); // For deduplication
 
+  // ─── HELPER: FLUSH BUFFER ───
   const flushBuffer = () => {
-    if (!ruleBuffer || ruleBuffer.length < 15) {
+    if (!ruleBuffer || ruleBuffer.trim().length < 15) {
       ruleBuffer = "";
       return;
     }
 
+    // Clean up the rule
     let cleanRule = ruleBuffer
-      .replace(/^[>•\-*\d\.)\s]+/, "")
+      .replace(/^[>•\-*\d\.)\s]+/, "") // Remove leading bullets
       .replace(/\s+/g, " ")
       .trim();
 
-    if (
-      GARBAGE_TERMS.some((t) => cleanRule.toLowerCase().includes(t)) ||
-      /^\d+$/.test(cleanRule)
-    ) {
+    // Skip garbage
+    const lowerClean = cleanRule.toLowerCase();
+    if (GARBAGE_TERMS.some((t) => lowerClean.includes(t)) || /^\d+$/.test(cleanRule)) {
       ruleBuffer = "";
       return;
     }
 
-    const ruleKey = cleanRule.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (processedRules.has(ruleKey)) {
+    // Deduplicate
+    const ruleKey = lowerClean.replace(/[^a-z0-9]/g, "");
+    if (ruleKey.length < 10 || processedRules.has(ruleKey)) {
       ruleBuffer = "";
       return;
     }
     processedRules.add(ruleKey);
 
+    // Intelligent classification
     let category = currentSection;
 
-    // Fallback Categorization
     if (!category) {
-      const lower = cleanRule.toLowerCase();
-      if (/waiting period|months|years/i.test(lower) && /\d+/.test(lower))
+      if (/waiting period|months|years/i.test(lowerClean) && /\d+/.test(lowerClean)) {
         category = "waiting_periods";
-      else if (/limit|capped|upto|sub-limit|co-pay/i.test(lower))
+      } else if (/limit|capped|upto|sub-limit|co-pay/i.test(lowerClean)) {
         category = "financial_limits";
-      else if (/excluded|not covered|not payable/i.test(lower))
+      } else if (/excluded|not covered|not payable/i.test(lowerClean)) {
         category = "exclusions";
-      else if (/notify|intimate|submit|claim/i.test(lower))
+      } else if (/notify|intimate|submit|claim/i.test(lowerClean)) {
         category = "claim_rejection";
+      }
     }
 
+    // Add to results if we have a category
     if (category && results[category]) {
       results[category].push({
-        category: category,
+        category,
         text: cleanRule,
         extractionMethod: "state_machine_v4",
         confidence: 0.95,
@@ -154,7 +201,9 @@ function runRuleBasedExtraction(rawText) {
     ruleBuffer = "";
   };
 
+  // ─── MAIN LOOP ───
   for (const line of lines) {
+    // 1. Check for section header
     const newSection = identifySectionHeader(line);
     if (newSection) {
       flushBuffer();
@@ -162,18 +211,22 @@ function runRuleBasedExtraction(rawText) {
       continue;
     }
 
+    // 2. Check for new rule start
     if (isNewRuleStart(line)) {
       flushBuffer();
       ruleBuffer = line;
     } else {
+      // 3. Append to buffer (continuation)
       if (ruleBuffer) {
         ruleBuffer += " " + line;
       } else {
+        // Orphan line, treat as new start if it looks substantial
         ruleBuffer = line;
       }
     }
   }
 
+  // Final flush
   flushBuffer();
 
   results._meta.processingTimeMs = Date.now() - startTime;
@@ -184,6 +237,9 @@ function runRuleBasedExtraction(rawText) {
 // SECTION 4: SERVER INTEGRATION
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Routes the extracted rules into the collected object structure used by server.js
+ */
 function routeRuleResults(ruleResults, collected) {
   const categoryMap = {
     waiting_periods: "waiting_periods",
@@ -194,11 +250,11 @@ function routeRuleResults(ruleResults, collected) {
   };
 
   for (const [ruleCat, serverCat] of Object.entries(categoryMap)) {
-    if (!ruleResults[ruleCat]) continue;
+    if (!ruleResults?.[ruleCat]) continue;
 
     for (const item of ruleResults[ruleCat]) {
-      if (item && item.text) {
-        if (!collected[serverCat].includes(item.text)) {
+      if (item?.text) {
+        if (Array.isArray(collected?.[serverCat]) && !collected[serverCat].includes(item.text)) {
           collected[serverCat].push(item.text);
         }
       }
@@ -206,6 +262,7 @@ function routeRuleResults(ruleResults, collected) {
   }
 }
 
+// Dummy export for RULE_PATTERNS to maintain API compatibility
 const RULE_PATTERNS = {};
 
 export { runRuleBasedExtraction, routeRuleResults, RULE_PATTERNS };
