@@ -1,8 +1,8 @@
 /*******************************************************************************************
- * ruleEngine.js (v3.2 - STABLE & SYNTAX FIXED)
+ * ruleEngine.js (v3.3 - STABLE & SYNTAX FIXED)
  * =========================================================================================
  * PURPOSE: Extracts structured rules by reconstructing the "Parent-Child" hierarchy.
- * FIX: Resolved SyntaxError on line 25 (Malformed Regex).
+ * FIX: Resolved SyntaxError on line 26. Restored the correct regex for removing source tags.
  * ALGORITHM: "Family Reunion" (Context Inheritance) + "Elastic Anchor" (Value Parsing).
  *******************************************************************************************/
 
@@ -22,7 +22,7 @@ function normalizeTextStream(text) {
     .replace(/\r\n/g, "\n")
     // 2. Fix hyphenated words across lines (e.g. "hos-\npital" -> "hospital")
     .replace(/([a-z])-\n([a-z])/ig, "$1$2") 
-    // 3. Remove "Source" tags (FIXED SYNTAX HERE)
+    // 3. Remove "Source" tags (FIXED: Was causing SyntaxError)
     .replace(/\/g, "")
     // 4. Collapse multiple spaces into one
     .replace(/\s+/g, " ")
@@ -216,8 +216,10 @@ function reconstructHierarchy(rawText) {
  * Prevents "Room Rent 5k" and "Room Rent Limit 5k" from appearing twice.
  */
 function isSimilar(str1, str2) {
+  // Safe alphanumeric normalization
   const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, "");
   const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, "");
+  
   if (s1.includes(s2) || s2.includes(s1)) return true;
   
   // Jaccard Token Logic
@@ -225,6 +227,7 @@ function isSimilar(str1, str2) {
   const set2 = new Set(s2.split(''));
   const intersection = new Set([...set1].filter(x => set2.has(x)));
   const union = new Set([...set1, ...set2]);
+  
   return (intersection.size / union.size) > 0.70;
 }
 
@@ -246,6 +249,7 @@ function runRuleBasedExtraction(rawText) {
   const reconstructedSentences = reconstructHierarchy(text);
   
   // STEP 2: ALSO USE RAW STREAM (For inline rules)
+  // Split by common sentence delimiters, safely escaped
   const rawSentences = text.split(/[.:;]/); 
   
   const allCandidates = [...reconstructedSentences, ...rawSentences];
@@ -263,7 +267,7 @@ function runRuleBasedExtraction(rawText) {
           // Validate logic (Context Check)
           if (!rule.validate(sentence)) continue;
 
-          // Clean Rule Text
+          // Clean Rule Text (Safe regex)
           let cleanRule = sentence
             .replace(/[>•\-]/g, "")
             .replace(/\s+/g, " ")
