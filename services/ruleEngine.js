@@ -1,12 +1,12 @@
 /*******************************************************************************************
- * ruleEngine.js (v4.1 - STABLE SECTION-STATE AUTOMATON)
+ * ruleEngine.js (v4.2 - STABLE STATE MACHINE)
  * =========================================================================================
  * * PURPOSE: 
  * Extracts rules using a Document State Machine. It identifies "Zones" (Headers) 
  * and aggregates fragmented lines into complete, context-aware rules.
- * * * CHANGES IN v4.1:
- * - SYNTAX FIX: Replaced literal Regex with 'new RegExp()' for safety against copy-paste errors.
- * - STABILITY: Added fallback checks to prevent server crashes on null text.
+ * * * FIXES in v4.2:
+ * - REVERTED to Standard Regex Literals (/.../g) to eliminate SyntaxErrors.
+ * - PRESERVED the "Section-State" logic which solves the truncation/context issues.
  *******************************************************************************************/
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -45,20 +45,16 @@ const GARBAGE_TERMS = [
 
 /**
  * Normalizes raw PDF text.
- * Uses 'new RegExp' to avoid syntax errors with special characters.
+ * Uses standard literals to prevent SyntaxErrors.
  */
 function normalizeTextStream(text) {
   if (!text) return "";
   
-  // Safe Regex Patterns
-  const sourceTagRegex = new RegExp("\\", "g"); // Matches 
-  const hyphenFixRegex = new RegExp("([a-z])-\\n([a-z])", "ig");   // Fixes hyphens across lines
-  
   return text
-    .replace(/\r\n/g, "\n")
-    .replace(sourceTagRegex, "") // Remove debug tags safely
-    .replace(hyphenFixRegex, "$1$2") // Join hyphenated words
-    .replace(/[ \t]+/g, " ") // Collapse spaces
+    .replace(/\r\n/g, "\n")                 // Standardize newlines
+    .replace(/\/g, "")      // Remove tags safely
+    .replace(/([a-z])-\n([a-z])/ig, "$1$2") // Fix hyphenation across lines
+    .replace(/[ \t]+/g, " ")                // Collapse multiple spaces
     .trim();
 }
 
@@ -230,7 +226,7 @@ function routeRuleResults(ruleResults, collected) {
   }
 }
 
-// Dummy export for RULE_PATTERNS to maintain API compatibility with server.js imports
+// Dummy export for RULE_PATTERNS to maintain API compatibility
 const RULE_PATTERNS = {}; 
 
 export { runRuleBasedExtraction, routeRuleResults, RULE_PATTERNS };
