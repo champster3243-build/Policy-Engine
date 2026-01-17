@@ -1,14 +1,12 @@
 /*******************************************************************************************
- * ruleEngine.js (v4.0 - SECTION-STATE AUTOMATON)
+ * ruleEngine.js (v4.1 - STABLE SECTION-STATE AUTOMATON)
  * =========================================================================================
  * * PURPOSE: 
  * Extracts rules using a Document State Machine. It identifies "Zones" (Headers) 
  * and aggregates fragmented lines into complete, context-aware rules.
- * * * KEY INNOVATIONS:
- * 1. STATEFUL PARSING: Tracks "Current Section" (e.g., inside "Exclusions").
- * 2. SMART BUFFERING: Stitches broken lines into full sentences based on bullet/number detection.
- * 3. FUZZY HEADERS: Detects headers like "FIN LIMITE" or "WAITING PERIDOS" despite OCR errors.
- * 4. HYBRID CLASSIFICATION: Uses Section Context + Keywords to categorize rules with 99% accuracy.
+ * * * CHANGES IN v4.1:
+ * - SYNTAX FIX: Replaced literal Regex with 'new RegExp()' for safety against copy-paste errors.
+ * - STABILITY: Added fallback checks to prevent server crashes on null text.
  *******************************************************************************************/
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -46,14 +44,20 @@ const GARBAGE_TERMS = [
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * Normalizes raw PDF text: removes source tags, fixes hyphens, standardizes breaks.
+ * Normalizes raw PDF text.
+ * Uses 'new RegExp' to avoid syntax errors with special characters.
  */
 function normalizeTextStream(text) {
   if (!text) return "";
+  
+  // Safe Regex Patterns
+  const sourceTagRegex = new RegExp("\\", "g"); // Matches 
+  const hyphenFixRegex = new RegExp("([a-z])-\\n([a-z])", "ig");   // Fixes hyphens across lines
+  
   return text
     .replace(/\r\n/g, "\n")
-    .replace(/\/g, "") // Remove debug tags
-    .replace(/([a-z])-\n([a-z])/ig, "$1$2") // Fix hyphenation
+    .replace(sourceTagRegex, "") // Remove debug tags safely
+    .replace(hyphenFixRegex, "$1$2") // Join hyphenated words
     .replace(/[ \t]+/g, " ") // Collapse spaces
     .trim();
 }
@@ -100,6 +104,8 @@ function runRuleBasedExtraction(rawText) {
     coverage: [], claim_rejection: [],
     _meta: { rulesMatched: 0, processingTimeMs: 0 }
   };
+
+  if (!text) return results;
 
   const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   
@@ -225,7 +231,6 @@ function routeRuleResults(ruleResults, collected) {
 }
 
 // Dummy export for RULE_PATTERNS to maintain API compatibility with server.js imports
-// (The state machine replaces the need for complex patterns, but we keep the export to prevent crashes)
 const RULE_PATTERNS = {}; 
 
 export { runRuleBasedExtraction, routeRuleResults, RULE_PATTERNS };
