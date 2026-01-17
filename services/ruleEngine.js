@@ -8,6 +8,7 @@
  * FIXES in v4.3:
  * - SYNTAX: Fixed the malformed regex literal that caused the server crash.
  * - LOGIC: Preserved the 'Section-State' buffering to fix sentence truncation.
+ * - META: Added _meta.rulesApplied so server.js logging never crashes
  *******************************************************************************************/
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -68,13 +69,13 @@ function normalizeTextStream(text) {
   if (!text) return "";
 
   return String(text)
-    .replace(/\r\n/g, "\n")                  // Standardize newlines
-    .replace(/\r/g, "\n")                    // Handle stray CR
-    .replace(/\u0000/g, "")                  // Remove null bytes (sometimes from PDF extractors)
-    .replace(/\//g, "")                      // FIXED: Remove forward slashes safely
-    .replace(/([a-z])-\n([a-z])/gi, "$1$2")  // Fix hyphenation across lines
-    .replace(/[ \t]+/g, " ")                 // Collapse multiple spaces
-    .replace(/\n{3,}/g, "\n\n")              // Collapse excessive newlines
+    .replace(/\r\n/g, "\n")                 // Standardize newlines
+    .replace(/\r/g, "\n")                   // Handle stray CR
+    .replace(/\u0000/g, "")                 // Remove null bytes
+    .replace(/\//g, "")                     // FIXED: Remove forward slashes safely
+    .replace(/([a-z])-\n([a-z])/gi, "$1$2") // Fix hyphenation across lines
+    .replace(/[ \t]+/g, " ")                // Collapse multiple spaces
+    .replace(/\n{3,}/g, "\n\n")             // Collapse excessive newlines
     .trim();
 }
 
@@ -92,7 +93,6 @@ function identifySectionHeader(line) {
   if (clean.length < 3 || clean.length > 40) return null;
 
   for (const [key, category] of Object.entries(SECTION_MAP)) {
-    // Exact match or high-confidence substring match
     if (clean === key || (clean.includes(key) && clean.length < key.length + 10)) {
       return category;
     }
@@ -109,7 +109,7 @@ function isNewRuleStart(line) {
   // Bullets: >, -, *, •, 1., a), i.
   if (/^([>•\-*]|\d+\.|[a-zA-Z]\)|\([a-z]\)|[ivx]+\.)/.test(l)) return true;
 
-  // Capital letter start (heuristic for new sentence in lists)
+  // Capital letter start heuristic
   if (/^[A-Z][^a-z]{0,2}/.test(l) && l.length > 5) return true;
 
   return false;
@@ -129,7 +129,11 @@ function runRuleBasedExtraction(rawText) {
     exclusions: [],
     coverage: [],
     claim_rejection: [],
-    _meta: { rulesMatched: 0, processingTimeMs: 0 },
+    _meta: {
+      rulesMatched: 0,
+      processingTimeMs: 0,
+      rulesApplied: ["state_machine_v4"], // ✅ ADDED so server.js can safely .join()
+    },
   };
 
   if (!text) return results;
@@ -142,7 +146,7 @@ function runRuleBasedExtraction(rawText) {
   // STATE VARIABLES
   let currentSection = null;
   let ruleBuffer = "";
-  const processedRules = new Set(); // For deduplication
+  const processedRules = new Set();
 
   // ─── HELPER: FLUSH BUFFER ───
   const flushBuffer = () => {
@@ -151,14 +155,14 @@ function runRuleBasedExtraction(rawText) {
       return;
     }
 
-    // Clean up the rule
     let cleanRule = ruleBuffer
       .replace(/^[>•\-*\d\.)\s]+/, "") // Remove leading bullets
       .replace(/\s+/g, " ")
       .trim();
 
-    // Skip garbage
     const lowerClean = cleanRule.toLowerCase();
+
+    // Skip garbage
     if (GARBAGE_TERMS.some((t) => lowerClean.includes(t)) || /^\d+$/.test(cleanRule)) {
       ruleBuffer = "";
       return;
@@ -172,22 +176,21 @@ function runRuleBasedExtraction(rawText) {
     }
     processedRules.add(ruleKey);
 
-    // Intelligent classification
+    // Classification
     let category = currentSection;
 
     if (!category) {
       if (/waiting period|months|years/i.test(lowerClean) && /\d+/.test(lowerClean)) {
         category = "waiting_periods";
-      } else if (/limit|capped|upto|sub-limit|co-pay/i.test(lowerClean)) {
+      } else if (/limit|capped|upto|sub-limit|co-pay|copay|deductible/i.test(lowerClean)) {
         category = "financial_limits";
       } else if (/excluded|not covered|not payable/i.test(lowerClean)) {
         category = "exclusions";
-      } else if (/notify|intimate|submit|claim/i.test(lowerClean)) {
+      } else if (/notify|intimate|submit|claim|documentation/i.test(lowerClean)) {
         category = "claim_rejection";
       }
     }
 
-    // Add to results if we have a category
     if (category && results[category]) {
       results[category].push({
         category,
@@ -203,7 +206,6 @@ function runRuleBasedExtraction(rawText) {
 
   // ─── MAIN LOOP ───
   for (const line of lines) {
-    // 1. Check for section header
     const newSection = identifySectionHeader(line);
     if (newSection) {
       flushBuffer();
@@ -211,22 +213,15 @@ function runRuleBasedExtraction(rawText) {
       continue;
     }
 
-    // 2. Check for new rule start
     if (isNewRuleStart(line)) {
       flushBuffer();
       ruleBuffer = line;
     } else {
-      // 3. Append to buffer (continuation)
-      if (ruleBuffer) {
-        ruleBuffer += " " + line;
-      } else {
-        // Orphan line, treat as new start if it looks substantial
-        ruleBuffer = line;
-      }
+      if (ruleBuffer) ruleBuffer += " " + line;
+      else ruleBuffer = line;
     }
   }
 
-  // Final flush
   flushBuffer();
 
   results._meta.processingTimeMs = Date.now() - startTime;
@@ -237,9 +232,6 @@ function runRuleBasedExtraction(rawText) {
 // SECTION 4: SERVER INTEGRATION
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Routes the extracted rules into the collected object structure used by server.js
- */
 function routeRuleResults(ruleResults, collected) {
   const categoryMap = {
     waiting_periods: "waiting_periods",
