@@ -11,13 +11,16 @@
 <br><br>
 <button onclick="send()">Analyze</button>
 
+<h3>Upload PDF</h3>
+<input type="file" id="file" accept="application/pdf" />
+<button onclick="uploadPdf()">Upload & Parse PDF</button>
+
 <h3>Result</h3>
 <pre id="output"></pre>
 
 <script>
 async function send() {
   const text = document.getElementById("input").value;
-
   const response = await fetch("http://localhost:3000/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -27,6 +30,24 @@ async function send() {
   const data = await response.json();
   document.getElementById("output").textContent =
     data.result || data.error;
+}
+
+async function uploadPdf() {
+  const fileInput = document.getElementById('file');
+  const file = fileInput.files[0];
+  if (!file) return alert('Please choose a PDF file to upload.');
+
+  const form = new FormData();
+  form.append('file', file);
+
+  const resp = await fetch('http://localhost:3000/upload', { method: 'POST', body: form });
+  const data = await resp.json();
+  if (data.error) {
+    document.getElementById('output').textContent = data.error;
+    return;
+  }
+  document.getElementById('input').value = data.text || '';
+  document.getElementById('output').textContent = 'PDF parsed — text placed in input.';
 }
 </script>
 
