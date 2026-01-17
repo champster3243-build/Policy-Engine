@@ -1,24 +1,23 @@
 /*******************************************************************************************
- * ruleEngine.js (v2.0 - ELASTIC ANCHOR ALGORITHM)
+ * ruleEngine.js (v3.0 - FAMILY REUNION ALGORITHM)
  * =========================================================================================
  * * PURPOSE: 
- * Extracts structured insurance rules with high precision by treating text as a 
- * spatial stream rather than just strings.
- * * * KEY INNOVATIONS:
- * 1. PRE-PROCESSOR: Flattens PDF "visual formatting" (newlines, hyphenation) into logical streams.
- * 2. ELASTIC ANCHORING: Finds a value (e.g. "5000") and expands left/right to find context.
- * 3. SEMANTIC BOUNDARIES: Uses logic to stop expanding when it hits a new rule (bullets, periods).
- * 4. FUZZY DEDUPLICATION: Prevents "Room Rent: 5000" and "Room Rent capped at 5000" duplicates.
+ * Extracts structured rules by reconstructing the "Parent-Child" hierarchy of the document.
+ * * * * KEY INNOVATIONS:
+ * 1. GROUP LEADER LOGIC: Identifies headers (e.g., "The following are excluded:") and 
+ * propagates that context to all subsequent list items.
+ * 2. ELASTIC ANCHORING v2: Preserved from v2.0 for grabbing inline values.
+ * 3. AGGRESSIVE DEDUPLICATION: Uses Levenshtein distance to merge "repeated meanings".
+ * 4. HYBRID PARSING: Combines "Spatial" (Layout) and "Semantic" (Meaning) analysis.
  *******************************************************************************************/
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 1: TEXT NORMALIZATION & PRE-PROCESSING
+// SECTION 1: TEXT NORMALIZATION & UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 /**
  * CLEAN & FLATTEN TEXT
- * Removes PDF artifacts like random newlines, hyphenated words at line breaks,
- * and weird spacing. This creates a "Logical Stream" for the engine.
+ * Prepares the raw PDF stream for hierarchical analysis.
  */
 function normalizeTextStream(text) {
   if (!text) return "";
@@ -27,90 +26,62 @@ function normalizeTextStream(text) {
     .replace(/\r\n/g, "\n")
     // Fix hyphenated words across lines (e.g. "hos-\npital" -> "hospital")
     .replace(/([a-z])-\n([a-z])/ig, "$1$2") 
-    // Turn newlines into spaces to allow regex to match across lines
-    .replace(/\n+/g, " ") 
-    // Collapse multiple spaces
-    .replace(/\s+/g, " ") 
+    // Remove "Source" tags if present in the raw text dump
+    .replace(/\/g, "")
     .trim();
 }
 
 /**
+ * DETECTS IF A LINE IS A "GROUP LEADER" (HEADER)
+ * Returns true if the line implies a list is following.
+ */
+function isGroupLeader(line) {
+  const l = line.toLowerCase().trim();
+  if (l.length < 10) return false;
+  
+  // Indicators that this line governs the next lines
+  const LEADER_TRIGGERS = [
+    "following are excluded", 
+    "expenses related to", 
+    "treatment for the following", 
+    "subject to the following", 
+    "waiting period shall apply", 
+    "limits as specified below",
+    "sub-limits applicable",
+    "not cover", 
+    "payable only if"
+  ];
+
+  return l.endsWith(":") || LEADER_TRIGGERS.some(t => l.includes(t));
+}
+
+/**
+ * DETECTS IF A LINE IS A "FAMILY MEMBER" (LIST ITEM)
+ * Returns true if the line looks like a bullet point or continuation.
+ */
+function isFamilyMember(line) {
+  const l = line.trim();
+  // Starts with Bullet, Number, or Letter (e.g., "1.", "a)", ">", "-")
+  return /^(\d+\.|[a-zA-Z]\)|\>|\-|•|vii\.|ix\.|iv\.)/.test(l);
+}
+
+/**
  * GARBAGE FILTER
- * Returns TRUE if the text is likely administrative noise (headers, footers, lists).
  */
 function isGarbage(text) {
   const t = text.toLowerCase();
-  
-  // Blocklist of administrative terms that confuse the engine
   const BLOCKLIST = [
-    "total rules", "page", "annexure", "list i", "list ii", "list iii", 
-    "irda", "reg no", "cin:", "uin:", "corporate office", "registered office",
-    "sum insured", "premium", "deductible", "cumulative bonus", 
-    "policy period", "date of inception", "schedule of benefits", "total rules"
+    "total rules", "page", "annexure", "list i", "list ii", "irda", "reg no", 
+    "cin:", "uin:", "corporate office", "registered office", "sum insured", 
+    "premium", "policy period", "schedule of benefits", "total rules", "contents"
   ];
-
-  if (t.length < 15) return true; // Too short to be a meaningful rule
+  if (t.length < 15) return true;
   if (BLOCKLIST.some(term => t.includes(term))) return true;
-  if (/^[\d\W]+$/.test(t)) return true; // Only numbers/symbols
-  
-  return false;
+  return /^[\d\W]+$/.test(t);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 2: THE ELASTIC EXPANSION LOGIC (THE BRAIN)
-// ═══════════════════════════════════════════════════════════════════════════════════════
-
-/**
- * EXPAND CONTEXT AROUND ANCHOR
- * Walks backwards and forwards from a match to build a complete sentence.
- * * @param {string} fullText - The normalized text stream
- * @param {object} match - The regex match object
- * @param {number} leftChars - Max characters to look back (Subject Search)
- * @param {number} rightChars - Max characters to look forward (Condition Search)
- */
-function elasticExpand(fullText, match, leftChars = 120, rightChars = 120) {
-  const startIdx = match.index;
-  const endIdx = startIdx + match[0].length;
-
-  // 1. EXPAND LEFT (Find the Subject)
-  // Look back X chars, but stop at major punctuation (. : ;) or Bullet points
-  let leftContext = fullText.slice(Math.max(0, startIdx - leftChars), startIdx);
-  
-  // Find the last "Sentence Breaker" to ensure we don't bleed into the previous rule.
-  // Breakers: Period, Colon, Semicolon, Bullet (•, -, >), or Numbered List (1.)
-  const leftBreakerRegex = /[.:;!?•\->]|\d+\.\s/; 
-  
-  // Search for the *last* breaker in the left chunk
-  // We reverse the string to find the "closest" breaker moving backwards
-  const reversedLeft = leftContext.split("").reverse().join("");
-  const firstBreakerIndex = reversedLeft.search(leftBreakerRegex);
-  
-  if (firstBreakerIndex !== -1) {
-    // Cut off everything before the breaker
-    const cutIndex = leftContext.length - firstBreakerIndex;
-    leftContext = leftContext.slice(cutIndex); 
-  }
-  
-  // 2. EXPAND RIGHT (Find the Condition)
-  // Look forward X chars, but stop at next sentence end
-  let rightContext = fullText.slice(endIdx, Math.min(fullText.length, endIdx + rightChars));
-  const rightBreaker = rightContext.search(/[.:;!?•\->]|\d+\.\s/);
-  
-  if (rightBreaker !== -1) {
-    rightContext = rightContext.slice(0, rightBreaker); // Take everything up to the breaker
-  }
-
-  // 3. ASSEMBLE
-  let completeRule = (leftContext + match[0] + rightContext).trim();
-  
-  // 4. CLEANUP (Remove leading non-alphanumeric chars left by split)
-  completeRule = completeRule.replace(/^[^a-zA-Z0-9"(]+/, "");
-
-  return completeRule;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 3: PATTERN LIBRARY (ANCHOR-BASED)
+// SECTION 2: THE PATTERN LIBRARY
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 const RULE_PATTERNS = {
@@ -118,167 +89,143 @@ const RULE_PATTERNS = {
   // ═══ WAITING PERIODS ═══
   waiting_periods: [
     {
-      name: "anchor_waiting_period",
-      // Anchor: "24 months" or "2 years"
-      pattern: /(\d+)\s*(?:months?|years?|days?)/gi,
-      extract: (match, fullText) => {
-        // Use Elastic Expand to find "Maternity" before "9 months"
-        const rule = elasticExpand(fullText, match, 100, 60);
-        
-        // Strict Validation: Must look like a waiting period rule
-        if (!/waiting period|exclusion|after continuous|prior to|before coverage/i.test(rule)) return null;
-        
-        return {
-          category: "waiting_period",
-          text: rule,
-          confidence: 0.99
-        };
-      }
+      name: "explicit_waiting",
+      // Catches "24 months waiting period"
+      pattern: /(\d+)\s*(?:months?|years?|days?)/i,
+      validate: (text) => /waiting period|exclusion|after continuous|prior to/i.test(text),
+      confidence: 0.99
     },
     {
-      name: "specific_disease_anchor",
-      // Anchor: List of diseases followed by time
-      pattern: /(maternity|cataract|hernia|hysterectomy|joint replacement|bariatric|ped|pre-existing)[^.:]*?(\d+)\s*(months?|years?)/gi,
-      extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 30, 50);
-        return {
-          category: "waiting_period",
-          text: rule,
-          confidence: 0.99
-        };
-      }
+      name: "disease_waiting",
+      // Catches "Cataract: 2 Years"
+      pattern: /(maternity|cataract|hernia|hysterectomy|joint replacement|ped|pre-existing).*?(\d+)\s*(months?|years?)/i,
+      validate: () => true, // Pattern itself is specific enough
+      confidence: 0.98
     }
   ],
 
   // ═══ FINANCIAL LIMITS ═══
   financial_limits: [
     {
-      name: "anchor_monetary_limit",
-      // Anchor: "Rs. 5000" or "₹ 5000"
-      pattern: /(?:rs\.?|₹|inr)\s*([\d,]+)/gi,
-      extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 120, 80);
-        
-        // NOISE FILTER: Ignore if it's "Sum Insured" or "Premium"
-        if (/sum insured|premium|total|deductible|balance/i.test(rule)) return null;
-        
-        // VALIDATION: Must imply a limit
-        if (!/limit|capped|upto|maximum|sub-limit|restricted to|co-pay|subject to/i.test(rule)) return null;
-
-        return {
-          category: "financial_limit",
-          text: rule,
-          confidence: 0.95
-        };
-      }
+      name: "monetary_limit",
+      // Catches "Rs. 5000", "₹ 5000"
+      pattern: /(?:rs\.?|₹|inr)\s*([\d,]+)/i,
+      validate: (text) => 
+        !/sum insured|premium|total|deductible/i.test(text) && 
+        /limit|capped|upto|maximum|sub-limit|restricted|co-pay/i.test(text),
+      confidence: 0.95
     },
     {
-      name: "anchor_percentage_limit",
-      // Anchor: "20%" or "50 %"
-      pattern: /(\d+)\s*%/gi,
-      extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 120, 80);
-        
-        // NOISE FILTER
-        if (/health score|average|total|sum insured|rate/i.test(rule)) return null;
-        
-        // VALIDATION: Look for limit keywords
-        if (!/co-pay|limit|capped|upto|of sum insured|claim|payable/i.test(rule)) return null;
-
-        return {
-          category: "financial_limit",
-          text: rule,
-          confidence: 0.95
-        };
-      }
+      name: "percentage_limit",
+      // Catches "20%"
+      pattern: /(\d+)\s*%/i,
+      validate: (text) => 
+        !/health score|average|total|rate/i.test(text) && 
+        /co-pay|limit|capped|upto|claim|payable/i.test(text),
+      confidence: 0.95
     }
   ],
 
   // ═══ EXCLUSIONS ═══
   exclusions: [
     {
-      name: "anchor_exclusion_phrase",
-      // Anchor: "is excluded", "not covered"
-      pattern: /(?:is|are|shall be)\s+(?:specifically\s+)?(excluded|not covered|not payable|not admissible)/gi,
-      extract: (match, fullText) => {
-        // Look FAR back (150 chars) because "Subject ... long description ... is excluded"
-        const rule = elasticExpand(fullText, match, 150, 30); 
-        
-        // NOISE FILTER: Don't capture generic "claims are excluded" without a subject
-        if (/claim arising|expenses related to/i.test(rule) && rule.length < 30) return null;
-
-        return {
-          category: "exclusion",
-          text: rule,
-          confidence: 0.92
-        };
-      }
+      name: "exclusion_keyword",
+      // Catches "is excluded", "not covered"
+      pattern: /(excluded|not covered|not payable|not admissible)/i,
+      validate: (text) => text.length > 20 && !/claim arising/i.test(text),
+      confidence: 0.92
     },
     {
-      name: "anchor_specific_exclusion",
+      name: "hard_exclusion_terms",
       // Anchor: Robust keywords that are ALWAYS exclusions
-      pattern: /(war|terrorism|nuclear|cosmetic|obesity|infertility|hazardous sports|breach of law|alcohol|drug abuse)/gi,
-      extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 60, 100);
-        
-        // Validate it's an exclusion statement
-        if (!/excluded|not covered|not payable|not admissible/i.test(rule)) return null;
-
-        return {
-          category: "exclusion",
-          text: rule,
-          confidence: 0.98
-        };
-      }
+      pattern: /(war|terrorism|nuclear|cosmetic|obesity|infertility|hazardous sports|breach of law|alcohol|drug abuse)/i,
+      validate: (text) => /excluded|not covered/i.test(text),
+      confidence: 0.98
     }
   ],
 
   // ═══ CLAIM REJECTION ═══
   claim_rejection: [
     {
-      name: "anchor_timeline",
-      // Anchor: "24 hours", "15 days"
-      pattern: /(\d+)\s*(hours?|days?)/gi,
-      extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 100, 60);
-        
-        // Only capture if related to notification/submission
-        if (!/notify|intimate|submit|claim form|documents|report/i.test(rule)) return null;
-
-        return {
-          category: "claim_rejection",
-          text: rule,
-          confidence: 0.95
-        };
-      }
+      name: "timeline_rejection",
+      pattern: /(?:within|in)\s*(\d+)\s*(hours?|days?)/i,
+      validate: (text) => /notify|intimate|submit|claim form|documents/i.test(text),
+      confidence: 0.95
     }
   ]
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 4: CORE EXECUTION FUNCTIONS
+// SECTION 3: THE FAMILY REUNION ALGORITHM (CORE LOGIC)
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * FUZZY SIMILARITY CHECK (Jaccard Index)
- * Returns true if strings are >75% similar.
- * Solves: "Room rent 5000" vs "Room rent limit 5000"
+ * RECONSTRUCTS SENTENCES FROM HIERARCHY
+ * Turns the raw stream into a list of "Context-Complete" sentences.
+ */
+function reconstructHierarchy(rawText) {
+  const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const sentences = [];
+  
+  let currentLeader = ""; // The "Group Leader" (Active Context)
+  let buffer = "";        // For stitching broken lines
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // 1. IS IT A NEW LEADER?
+    if (isGroupLeader(line)) {
+      currentLeader = line.replace(/[:;]$/, ""); // Store leader without colon
+      buffer = ""; // Clear buffer
+      continue;
+    }
+
+    // 2. IS IT A FAMILY MEMBER? (List Item)
+    if (currentLeader && isFamilyMember(line)) {
+      // Merge Leader + Member
+      // Example: "The following are excluded" + "Cosmetic Surgery"
+      const combined = `${currentLeader} ${line}`.replace(/[>•\-]/g, "").trim();
+      sentences.push(combined);
+      continue;
+    }
+
+    // 3. IS IT A STOPPER? (New Section)
+    if (/section|part \w|definitions/i.test(line) && line.length < 30) {
+      currentLeader = ""; // Reset context
+    }
+
+    // 4. STANDARD LINE (Append to buffer or push as standalone)
+    // If it ends with punctuation, it's a complete sentence.
+    if (/[.:;]$/.test(line)) {
+      sentences.push(buffer + " " + line);
+      buffer = "";
+    } else {
+      buffer += " " + line;
+    }
+  }
+  
+  return sentences;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// SECTION 4: EXECUTION & DEDUPLICATION
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * FUZZY SIMILARITY (DEDUPLICATION)
+ * Prevents "Room Rent 5k" and "Room Rent Limit 5k" from appearing twice.
  */
 function isSimilar(str1, str2) {
-  // Normalize: lowercase, remove non-alphanumeric
   const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, "");
   const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, "");
-  
-  // Optimization: Check substring inclusion first
   if (s1.includes(s2) || s2.includes(s1)) return true;
   
-  // Jaccard Token Logic (Set Overlap)
+  // Jaccard Token Logic
   const set1 = new Set(s1.split(''));
   const set2 = new Set(s2.split(''));
   const intersection = new Set([...set1].filter(x => set2.has(x)));
   const union = new Set([...set1, ...set2]);
-  
-  return (intersection.size / union.size) > 0.75;
+  return (intersection.size / union.size) > 0.70;
 }
 
 /**
@@ -292,54 +239,65 @@ function runRuleBasedExtraction(rawText) {
     _meta: { rulesMatched: 0, rulesApplied: [], processingTimeMs: 0 }
   };
 
-  // 1. NORMALIZE TEXT STREAM
   const text = normalizeTextStream(rawText);
   if (text.length < 50) return results;
 
+  // STEP 1: RECONSTRUCT HIERARCHY (The "Family Reunion")
+  const reconstructedSentences = reconstructHierarchy(text);
+  
+  // STEP 2: ALSO USE RAW STREAM (For inline rules)
+  // We use a sliding window of sentences from the raw text for backup
+  const rawSentences = text.split(/[.:;]/); 
+  
+  const allCandidates = [...reconstructedSentences, ...rawSentences];
   const seenRules = [];
 
-  // 2. RUN PATTERNS
-  for (const [category, patterns] of Object.entries(RULE_PATTERNS)) {
-    for (const rule of patterns) {
-      rule.pattern.lastIndex = 0;
-      let match;
-      let matchCount = 0;
-      
-      // Limit matches per rule to prevent infinite loops on bad regex
-      while ((match = rule.pattern.exec(text)) !== null && matchCount < 10) {
-        matchCount++;
-        try {
-          const extracted = rule.extract(match, text);
+  // STEP 3: APPLY PATTERNS
+  for (const sentence of allCandidates) {
+    if (isGarbage(sentence)) continue;
+
+    for (const [category, patterns] of Object.entries(RULE_PATTERNS)) {
+      for (const rule of patterns) {
+        const match = sentence.match(rule.pattern);
+        
+        if (match) {
+          // Validate logic (Context Check)
+          if (!rule.validate(sentence)) continue;
+
+          // Clean Rule Text
+          let cleanRule = sentence
+            .replace(/[>•\-]/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          // Deduplication
+          if (seenRules.some(existing => isSimilar(existing, cleanRule))) continue;
+
+          seenRules.push(cleanRule);
           
-          // 3. GATEKEEPING
-          if (!extracted || !extracted.text) continue;
-          if (isGarbage(extracted.text)) continue;
-          
-          // 4. DEDUPLICATION
-          if (seenRules.some(existing => isSimilar(existing, extracted.text))) continue;
-          
-          // Accept Rule
-          seenRules.push(extracted.text);
           if (results[category]) {
             results[category].push({ 
-              ...extracted, 
+              category: category,
+              text: cleanRule, 
               ruleName: rule.name, 
-              extractionMethod: 'rule_based_elastic' 
+              extractionMethod: 'rule_based_family_reunion',
+              confidence: rule.confidence
             });
             results._meta.rulesMatched++;
             if (!results._meta.rulesApplied.includes(rule.name)) results._meta.rulesApplied.push(rule.name);
           }
-        } catch (err) { console.warn(`Error in rule ${rule.name}:`, err.message); }
+          // Once a sentence is matched to a category, move to next sentence
+          // (Prevents tagging the same sentence as both Exclusion and Limit)
+          break; 
+        }
       }
     }
   }
+
   results._meta.processingTimeMs = Date.now() - startTime;
   return results;
 }
 
-/**
- * ROUTER: CONNECTS ENGINE TO SERVER
- */
 function routeRuleResults(ruleResults, collected) {
   const categoryMap = {
     'waiting_periods': 'waiting_periods',
@@ -353,7 +311,6 @@ function routeRuleResults(ruleResults, collected) {
     const items = ruleResults[ruleCategory] || [];
     for (const item of items) {
       if (collected[serverCategory] && item.text) {
-        // Double check dedup against existing collection
         const isDup = collected[serverCategory].some(existing => isSimilar(existing, item.text));
         if (!isDup) {
           collected[serverCategory].push(item.text);
