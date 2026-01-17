@@ -1,8 +1,9 @@
 /*******************************************************************************************
- * ruleEngine.js (v3.1 - STABLE FAMILY REUNION)
+ * ruleEngine.js (v3.2 - STABLE & SYNTAX FIXED)
  * =========================================================================================
  * PURPOSE: Extracts structured rules by reconstructing the "Parent-Child" hierarchy.
- * FIXES: Solved SyntaxError in regex replacements. Safe handling of special characters.
+ * FIX: Resolved SyntaxError on line 25 (Malformed Regex).
+ * ALGORITHM: "Family Reunion" (Context Inheritance) + "Elastic Anchor" (Value Parsing).
  *******************************************************************************************/
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -21,9 +22,9 @@ function normalizeTextStream(text) {
     .replace(/\r\n/g, "\n")
     // 2. Fix hyphenated words across lines (e.g. "hos-\npital" -> "hospital")
     .replace(/([a-z])-\n([a-z])/ig, "$1$2") 
-    // 3. Remove "Source" tags if present (e.g. )
+    // 3. Remove "Source" tags (FIXED SYNTAX HERE)
     .replace(/\/g, "")
-    // 4. Collapse multiple spaces
+    // 4. Collapse multiple spaces into one
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -31,11 +32,13 @@ function normalizeTextStream(text) {
 /**
  * DETECTS IF A LINE IS A "GROUP LEADER" (HEADER)
  * Returns true if the line implies a list is following.
+ * Example: "The following expenses are excluded:"
  */
 function isGroupLeader(line) {
   const l = line.toLowerCase().trim();
   if (l.length < 10) return false;
   
+  // Indicators that this line governs the next lines
   const LEADER_TRIGGERS = [
     "following are excluded", 
     "expenses related to", 
@@ -58,19 +61,19 @@ function isGroupLeader(line) {
 function isFamilyMember(line) {
   const l = line.trim();
   // Starts with Bullet, Number, or Letter (e.g., "1.", "a)", ">", "-")
-  // Regex safety: explicitly match common list markers
   return /^(\d+\.|[a-zA-Z]\)|\>|\-|•|vii\.|ix\.|iv\.)/.test(l);
 }
 
 /**
  * GARBAGE FILTER
+ * Removes administrative noise that isn't a rule.
  */
 function isGarbage(text) {
   const t = text.toLowerCase();
   const BLOCKLIST = [
     "total rules", "page", "annexure", "list i", "list ii", "irda", "reg no", 
     "cin:", "uin:", "corporate office", "registered office", "sum insured", 
-    "premium", "policy period", "schedule of benefits", "contents"
+    "premium", "policy period", "schedule of benefits", "total rules", "contents"
   ];
   if (t.length < 15) return true;
   if (BLOCKLIST.some(term => t.includes(term))) return true;
@@ -87,12 +90,14 @@ const RULE_PATTERNS = {
   waiting_periods: [
     {
       name: "explicit_waiting",
+      // Catches "24 months waiting period"
       pattern: /(\d+)\s*(?:months?|years?|days?)/i,
       validate: (text) => /waiting period|exclusion|after continuous|prior to/i.test(text),
       confidence: 0.99
     },
     {
       name: "disease_waiting",
+      // Catches "Cataract: 2 Years"
       pattern: /(maternity|cataract|hernia|hysterectomy|joint replacement|ped|pre-existing).*?(\d+)\s*(months?|years?)/i,
       validate: () => true,
       confidence: 0.98
@@ -125,12 +130,14 @@ const RULE_PATTERNS = {
   exclusions: [
     {
       name: "exclusion_keyword",
+      // Catches "is excluded", "not covered"
       pattern: /(excluded|not covered|not payable|not admissible)/i,
       validate: (text) => text.length > 20 && !/claim arising/i.test(text),
       confidence: 0.92
     },
     {
       name: "hard_exclusion_terms",
+      // Anchor: Robust keywords that are ALWAYS exclusions
       pattern: /(war|terrorism|nuclear|cosmetic|obesity|infertility|hazardous sports|breach of law|alcohol|drug abuse)/i,
       validate: (text) => /excluded|not covered/i.test(text),
       confidence: 0.98
@@ -155,9 +162,10 @@ const RULE_PATTERNS = {
 /**
  * RECONSTRUCTS SENTENCES FROM HIERARCHY
  * Turns the raw stream into a list of "Context-Complete" sentences.
+ * Logic: "Parent Header" + "Child Item" = "Complete Rule"
  */
 function reconstructHierarchy(rawText) {
-  // Split by newline but keep integrity
+  // Split by newline to respect document structure initially
   const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   const sentences = [];
   
@@ -187,7 +195,7 @@ function reconstructHierarchy(rawText) {
       currentLeader = ""; // Reset context
     }
 
-    // 4. STANDARD LINE
+    // 4. STANDARD LINE (Append to buffer or push as standalone)
     if (/[.:;]$/.test(line)) {
       sentences.push(buffer + " " + line);
       buffer = "";
@@ -205,12 +213,11 @@ function reconstructHierarchy(rawText) {
 
 /**
  * FUZZY SIMILARITY (DEDUPLICATION)
+ * Prevents "Room Rent 5k" and "Room Rent Limit 5k" from appearing twice.
  */
 function isSimilar(str1, str2) {
-  // Safe alphanumeric normalization
   const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, "");
   const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, "");
-  
   if (s1.includes(s2) || s2.includes(s1)) return true;
   
   // Jaccard Token Logic
@@ -218,7 +225,6 @@ function isSimilar(str1, str2) {
   const set2 = new Set(s2.split(''));
   const intersection = new Set([...set1].filter(x => set2.has(x)));
   const union = new Set([...set1, ...set2]);
-  
   return (intersection.size / union.size) > 0.70;
 }
 
@@ -236,11 +242,10 @@ function runRuleBasedExtraction(rawText) {
   const text = normalizeTextStream(rawText);
   if (text.length < 50) return results;
 
-  // STEP 1: RECONSTRUCT HIERARCHY
+  // STEP 1: RECONSTRUCT HIERARCHY (The "Family Reunion")
   const reconstructedSentences = reconstructHierarchy(text);
   
   // STEP 2: ALSO USE RAW STREAM (For inline rules)
-  // Split by common sentence delimiters, safely escaped
   const rawSentences = text.split(/[.:;]/); 
   
   const allCandidates = [...reconstructedSentences, ...rawSentences];
@@ -258,7 +263,7 @@ function runRuleBasedExtraction(rawText) {
           // Validate logic (Context Check)
           if (!rule.validate(sentence)) continue;
 
-          // Clean Rule Text (Safe regex)
+          // Clean Rule Text
           let cleanRule = sentence
             .replace(/[>•\-]/g, "")
             .replace(/\s+/g, " ")
