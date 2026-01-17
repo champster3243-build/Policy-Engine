@@ -1,34 +1,35 @@
 /*******************************************************************************************
- * SERVER.JS (v1.6 - HYBRID ENGINE + KNOWLEDGE GRAPH SYNC)
+ * SERVER.JS (v1.7 - HYBRID ENGINE + RULE ENGINE v5.1 INTEGRATION)
  * ==================================================================================
- * * PURPOSE: Backend for Policy Analysis with Rule Engine & SQL Normalization.
- * * ARCHITECTURE OVERVIEW:
- * ┌─────────────┐      ┌──────────────┐      ┌─────────────┐      ┌──────────────┐
- * │   Client    │─────▶│   Express    │─────▶│   Gemini    │─────▶│   Supabase   │
- * │ (Next.js)   │◀─────│   Server     │◀─────│  AI Model   │◀─────│  (DB + SQL)  │
- * └─────────────┘      └──────────────┘      └─────────────┘      └──────────────┘
- * * * FEATURES:
- * 1. HYBRID EXTRACTION: Regex Rules (Fast) + Gemini AI (Smart)
- * 2. TWO-PASS LOGIC: Cost-efficient scanning and deep analysis
- * 3. DB SYNC: Normalizes results into 'policies' and 'policy_rules' tables for querying
- * *******************************************************************************************/
+ * CHANGES FROM v1.6:
+ * - Integrated rule engine v5.1 with cross-chunk continuation
+ * - Added fuzzy deduplication for near-duplicate rules
+ * - Preserved confidence scores in CPDM output
+ * - Fixed potential crashes from undefined _meta fields
+ *******************************************************************************************/
 
-console.log("=== SERVER.JS FILE LOADED (v1.6 HYBRID + DB SYNC) ===");
+console.log("=== SERVER.JS FILE LOADED (v1.7 HYBRID + RULE ENGINE v5.1) ===");
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
 // SECTION 1: IMPORTS & INITIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 import express from "express";
-import cors from "cors"; // Allows cross-origin requests from frontend
-import dotenv from "dotenv"; // Loads environment variables from .env file
-import multer from "multer"; // Handles file uploads (PDFs in our case)
-import pdf from "pdf-parse"; // Extracts raw text from PDF files
-import { GoogleGenerativeAI } from "@google/generative-ai"; // Gemini AI SDK
-import { createClient } from "@supabase/supabase-js"; // Database & Storage
-import { normalizePolicy } from "./services/normalizePolicy.js"; // Custom normalization logic
-import { runRuleBasedExtraction, routeRuleResults } from "./services/ruleEngine.js"; // Rule Engine
-import { syncToDatabase } from "./services/dbSync.js"; // Knowledge Graph Sync
+import cors from "cors";
+import dotenv from "dotenv";
+import multer from "multer";
+import pdf from "pdf-parse";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { createClient } from "@supabase/supabase-js";
+import { normalizePolicy } from "./services/normalizePolicy.js";
+// ✅ UPDATED IMPORT: Include new functions from v5.1
+import { 
+  runRuleBasedExtraction, 
+  routeRuleResults,
+  createDedupeKey,
+  calculateSimilarity 
+} from "./services/ruleEngine.js";
+import { syncToDatabase } from "./services/dbSync.js";
 
 dotenv.config();
 
@@ -42,7 +43,7 @@ app.use(express.json());
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -79,6 +80,63 @@ function sleep(ms = 0) {
 function repairTextGlue(text) {
   if (!text) return "";
   return text.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// SECTION 4.1: FUZZY DEDUPLICATION (NEW)
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Fuzzy deduplicate an array of strings
+ * Uses token-based similarity to catch near-duplicates
+ */
+function fuzzyDedup(arr, threshold = 0.92) {
+  if (!Array.isArray(arr)) return [];
+  
+  const result = [];
+  const seen = [];  // Array of { key, text }
+  
+  for (const item of arr) {
+    const text = String(item || "").trim();
+    if (!text || text.length < 10) continue;
+    
+    const key = createDedupeKey(text);
+    if (key.length < 10) continue;
+    
+    // Check for exact duplicate
+    let isDuplicate = false;
+    for (const existing of seen) {
+      if (existing.key === key) {
+        isDuplicate = true;
+        break;
+      }
+      
+      // Check fuzzy similarity
+      const similarity = calculateSimilarity(text, existing.text);
+      if (similarity >= threshold) {
+        isDuplicate = true;
+        // Keep the longer version
+        if (text.length > existing.text.length * 1.1) {
+          existing.text = text;
+          existing.key = key;
+          // Update in result array
+          const idx = result.indexOf(existing.text);
+          if (idx === -1) {
+            const oldIdx = result.findIndex(r => calculateSimilarity(r, existing.text) >= threshold);
+            if (oldIdx !== -1) result[oldIdx] = text;
+          }
+        }
+        break;
+      }
+    }
+    
+    if (!isDuplicate) {
+      seen.push({ key, text });
+      result.push(text);
+    }
+  }
+  
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -475,6 +533,16 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
       claim_rejection_conditions: [],
     };
 
+    // ✅ NEW: Track rule engine stats separately
+    const ruleEngineStats = {
+      totalMatched: 0,
+      totalDuplicates: 0,
+      processingTimeMs: 0,
+    };
+
+    // ✅ NEW: Cross-chunk continuation support
+    let trailingFragment = null;
+
     let parsedChunks = 0;
     let failedChunks = 0;
     const pass2Candidates = [];
@@ -500,17 +568,39 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
           // ════ HYBRID STRATEGY (Phase 1) ════
           // 1. RUN RULE ENGINE FIRST (Instant, Free)
           if (!defMode) {
-            const ruleResults = runRuleBasedExtraction(task.text);
+            // ✅ UPDATED: Use v5.1 options including cross-chunk continuation
+            const ruleResults = runRuleBasedExtraction(task.text, {
+              similarityThreshold: 0.92,
+              prependFragment: trailingFragment,
+              debug: false,
+            });
 
-            if (ruleResults?._meta?.rulesMatched > 0) {
-              // ✅ FIX: rulesApplied may be undefined, so never call .join() blindly
-              const applied = Array.isArray(ruleResults._meta.rulesApplied)
-                ? ruleResults._meta.rulesApplied.join(", ")
-                : "state_machine_v4";
+            // ✅ UPDATED: Capture trailing fragment for next chunk
+            if (ruleResults?._meta?.trailingFragment) {
+              trailingFragment = ruleResults._meta.trailingFragment;
+            } else {
+              trailingFragment = null;
+            }
 
-              console.log(`   -> ⚡ Rules Found: ${ruleResults._meta.rulesMatched} (${applied})`);
+            // ✅ UPDATED: Safe access to _meta with defaults
+            const meta = ruleResults?._meta || {};
+            const rulesMatched = meta.rulesMatched || 0;
+            const duplicatesFound = meta.duplicatesFound || 0;
+            const processingTimeMs = meta.processingTimeMs || 0;
+
+            if (rulesMatched > 0) {
+              const applied = Array.isArray(meta.rulesApplied)
+                ? meta.rulesApplied.join(", ")
+                : "state_machine_v5.1";
+
+              console.log(`   -> ⚡ Rules Found: ${rulesMatched} (${applied}) [${processingTimeMs}ms]`);
 
               routeRuleResults(ruleResults, collected);
+
+              // ✅ NEW: Accumulate stats
+              ruleEngineStats.totalMatched += rulesMatched;
+              ruleEngineStats.totalDuplicates += duplicatesFound;
+              ruleEngineStats.processingTimeMs += processingTimeMs;
             }
           }
 
@@ -548,6 +638,7 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
 
     await runWorkerPool(chunks, 5);
     console.log(`PASS 1 DONE. Candidates for P2: ${pass2Candidates.length}`);
+    console.log(`   -> Rule Engine: ${ruleEngineStats.totalMatched} rules, ${ruleEngineStats.totalDuplicates} dupes blocked, ${ruleEngineStats.processingTimeMs}ms total`);
 
     if (pass2Candidates.length > 0) {
       const uniqueTasks = [...new Map(pass2Candidates.map((item) => [item.id, item])).values()];
@@ -555,12 +646,38 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
       await runWorkerPool(uniqueTasks, 5, true);
     }
 
-    const dedup = (arr) => [...new Set(arr.map((s) => String(s).trim()))];
-    collected.coverage = dedup(collected.coverage);
-    collected.exclusions = dedup(collected.exclusions);
-    collected.waiting_periods = dedup(collected.waiting_periods);
-    collected.financial_limits = dedup(collected.financial_limits);
-    collected.claim_rejection_conditions = dedup(collected.claim_rejection_conditions);
+    // ✅ UPDATED: Use fuzzy deduplication instead of simple Set
+    console.log("4. Running fuzzy deduplication...");
+    const beforeDedup = {
+      coverage: collected.coverage.length,
+      exclusions: collected.exclusions.length,
+      waiting_periods: collected.waiting_periods.length,
+      financial_limits: collected.financial_limits.length,
+      claim_rejection_conditions: collected.claim_rejection_conditions.length,
+    };
+
+    collected.coverage = fuzzyDedup(collected.coverage);
+    collected.exclusions = fuzzyDedup(collected.exclusions);
+    collected.waiting_periods = fuzzyDedup(collected.waiting_periods);
+    collected.financial_limits = fuzzyDedup(collected.financial_limits);
+    collected.claim_rejection_conditions = fuzzyDedup(collected.claim_rejection_conditions);
+
+    const afterDedup = {
+      coverage: collected.coverage.length,
+      exclusions: collected.exclusions.length,
+      waiting_periods: collected.waiting_periods.length,
+      financial_limits: collected.financial_limits.length,
+      claim_rejection_conditions: collected.claim_rejection_conditions.length,
+    };
+
+    const totalRemoved = 
+      (beforeDedup.coverage - afterDedup.coverage) +
+      (beforeDedup.exclusions - afterDedup.exclusions) +
+      (beforeDedup.waiting_periods - afterDedup.waiting_periods) +
+      (beforeDedup.financial_limits - afterDedup.financial_limits) +
+      (beforeDedup.claim_rejection_conditions - afterDedup.claim_rejection_conditions);
+
+    console.log(`   -> Fuzzy dedup removed ${totalRemoved} near-duplicates`);
 
     const cpdm = buildCPDM(policyMeta, collected);
     const normalized = normalizePolicy([
@@ -573,9 +690,15 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
       },
     ]);
 
-    console.log("3. Saving Results...");
+    console.log("5. Saving Results...");
 
-    await completeJobRecord(job.id, cpdm, policyMeta, { parsedChunks, failedChunks });
+    // ✅ UPDATED: Include rule engine stats in job record
+    await completeJobRecord(job.id, cpdm, policyMeta, { 
+      parsedChunks, 
+      failedChunks,
+      ruleEngine: ruleEngineStats,
+      dedupRemoved: totalRemoved,
+    });
 
     const totalRules = cpdm.rules.length || 1;
     const exclusions = cpdm.rules.filter((r) => r.category === "exclusion").length;
@@ -593,7 +716,14 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
       message: "Analysis Complete",
       jobId: job.id,
       fileUrl: publicUrl,
-      meta: { ...policyMeta, totalChunks: chunks.length, parsedChunks, failedChunks },
+      meta: { 
+        ...policyMeta, 
+        totalChunks: chunks.length, 
+        parsedChunks, 
+        failedChunks,
+        ruleEngine: ruleEngineStats,  // ✅ NEW: Expose rule engine stats
+        dedupStats: { before: beforeDedup, after: afterDedup, removed: totalRemoved },
+      },
       definitions: collected.definitions,
       normalized,
       cpdm,
