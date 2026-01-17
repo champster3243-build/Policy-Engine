@@ -1,23 +1,21 @@
 /*******************************************************************************************
- * * SERVER.JS (v1.4 STABLE - HEAVILY ANNOTATED FOR JUNIOR DEVELOPERS)
+ * SERVER.JS (v1.5 HYBRID - RULES + AI)
  * ==================================================================================
- * * PURPOSE: This backend performs AI-powered policy analysis using a TWO-PASS system.
+ * * PURPOSE: This backend performs AI-powered policy analysis using a HYBRID system.
  * * ARCHITECTURE OVERVIEW:
  * ┌─────────────┐      ┌──────────────┐      ┌─────────────┐      ┌──────────────┐
  * │   Client    │─────▶│   Express    │─────▶│   Gemini    │─────▶│   Supabase   │
  * │ (Next.js)   │◀─────│   Server     │◀─────│  AI Model   │◀─────│  (Storage +  │
  * │             │ JSON │              │ JSON │             │ JSON │   Database)  │
  * └─────────────┘      └──────────────┘      └─────────────┘      └──────────────┘
- * * TWO-PASS LOGIC EXPLANATION:
- * - PASS 1: Scan all chunks with LOW token count (fast & cheap) to identify high-signal content
- * - PASS 2: Re-process only "promising" chunks with HIGH token count for deep extraction
- * * WHY TWO PASSES?
- * - Cost optimization: We don't waste expensive tokens on irrelevant text
- * - Accuracy: High-signal chunks get a second, more thorough analysis
- * - Speed: First pass filters out ~70% of chunks quickly
+ * * * HYBRID EXTRACTION LOGIC:
+ * 1. RULE ENGINE: Fast Regex scan for deterministic patterns (Dates, Amounts, Keywords)
+ * 2. AI ENGINE (PASS 1): Low-token scan for complex context
+ * 3. AI ENGINE (PASS 2): Deep scan for high-signal chunks
+ * 4. RECONCILIATION: Merges Rules (High Confidence) with AI (Context)
  * *******************************************************************************************/
 
-console.log("=== SERVER.JS FILE LOADED (v1.4 STABLE) ===");
+console.log("=== SERVER.JS FILE LOADED (v1.5 HYBRID) ===");
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
 // SECTION 1: IMPORTS & INITIALIZATION
@@ -31,6 +29,7 @@ import pdf from "pdf-parse";       // Extracts raw text from PDF files
 import { GoogleGenerativeAI } from "@google/generative-ai";  // Gemini AI SDK
 import { createClient } from '@supabase/supabase-js';        // Database & Storage
 import { normalizePolicy } from "./services/normalizePolicy.js";  // Custom normalization logic
+import { runRuleBasedExtraction, routeRuleResults } from "./services/ruleEngine.js"; // <-- NEW: Rule Engine
 
 // Load environment variables (GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY)
 dotenv.config();
@@ -512,8 +511,8 @@ function isDefinitionChunk(text) {
   const earlyText = t.slice(0, 150);
   
   return earlyText.includes(" means ") || 
-          earlyText.includes(" is defined as ") || 
-          t.includes("definitions");
+         earlyText.includes(" is defined as ") || 
+         t.includes("definitions");
 }
 
 /**
@@ -663,7 +662,7 @@ function isGoodDefinitionPair(term, definition) {
  */
 function getGeminiModel(definitionMode, maxTokens) {
   return genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: "gemini-2.0-flash", // UPDATED: Using newer flash model
     generationConfig: { 
       maxOutputTokens: maxTokens, 
       temperature: 0  // Deterministic output
@@ -857,6 +856,19 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
           
           console.log(`[${isPass2 ? 'P2' : 'P1'} Worker ${id}] Processing ${i+1}/${tasks.length} | Mode: ${defMode ? 'DEF' : 'RULE'}`);
           
+          // ════ NEW: HYBRID STRATEGY IMPLEMENTATION ════
+          
+          // 1. RUN RULES ENGINE FIRST (Instant, Free)
+          if (!defMode) {
+             const ruleResults = runRuleBasedExtraction(task.text);
+             if (ruleResults._meta.rulesMatched > 0) {
+                console.log(`   -> ⚡ Rules Found: ${ruleResults._meta.rulesMatched} (${ruleResults._meta.rulesApplied.join(', ')})`);
+                // Route rule results immediately
+                routeRuleResults(ruleResults, collected);
+             }
+          }
+
+          // 2. RUN AI ENGINE (Gemini)
           // Get AI model (Pass 2 uses higher token limit)
           const model = getGeminiModel(defMode, isPass2 ? 4096 : 1024);
           
