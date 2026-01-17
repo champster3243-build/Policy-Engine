@@ -1,12 +1,12 @@
 /*******************************************************************************************
- * ruleEngine.js (v4.2 - STABLE STATE MACHINE)
+ * ruleEngine.js (v4.3 - STABLE SECTION-STATE AUTOMATON)
  * =========================================================================================
- * * PURPOSE: 
- * Extracts rules using a Document State Machine. It identifies "Zones" (Headers) 
+ * * PURPOSE:
+ * Extracts rules using a Document State Machine. It identifies "Zones" (Headers)
  * and aggregates fragmented lines into complete, context-aware rules.
- * * * FIXES in v4.2:
- * - REVERTED to Standard Regex Literals (/.../g) to eliminate SyntaxErrors.
- * - PRESERVED the "Section-State" logic which solves the truncation/context issues.
+ * * * FIXES in v4.3:
+ * - SYNTAX: Fixed the malformed regex literal that caused the server crash.
+ * - LOGIC: Preserved the 'Section-State' buffering to fix sentence truncation.
  *******************************************************************************************/
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -21,7 +21,7 @@ const SECTION_MAP = {
   "specific exclusions": "exclusions",
   "what is not covered": "exclusions",
   "financial limits": "financial_limits",
-  "fin limite": "financial_limits",     // OCR typo seen in logs
+  "fin limite": "financial_limits", // OCR typo seen in logs
   "fin limits": "financial_limits",
   "sub-limits": "financial_limits",
   "coverage": "coverage",
@@ -29,14 +29,30 @@ const SECTION_MAP = {
   "benefits": "coverage",
   "claim": "claim_rejection",
   "claims": "claim_rejection",
-  "risk factors": "claim_rejection"
+  "risk factors": "claim_rejection",
 };
 
 // Terms that indicate a line is garbage/noise
 const GARBAGE_TERMS = [
-  "total rules", "page", "annexure", "list i", "list ii", "irda", "reg no", "cin:", "uin:", 
-  "corporate office", "registered office", "sum insured", "premium", "policy period", 
-  "schedule of benefits", "contents", "authorized signatory", "stamp", "signature"
+  "total rules",
+  "page",
+  "annexure",
+  "list i",
+  "list ii",
+  "irda",
+  "reg no",
+  "cin:",
+  "uin:",
+  "corporate office",
+  "registered office",
+  "sum insured",
+  "premium",
+  "policy period",
+  "schedule of benefits",
+  "contents",
+  "authorized signatory",
+  "stamp",
+  "signature",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -45,16 +61,16 @@ const GARBAGE_TERMS = [
 
 /**
  * Normalizes raw PDF text.
- * Uses standard literals to prevent SyntaxErrors.
+ * FIX: Uses standard, valid Regex literals to prevent parse errors.
  */
 function normalizeTextStream(text) {
   if (!text) return "";
-  
+
   return text
-    .replace(/\r\n/g, "\n")                 // Standardize newlines
-    .replace(/\/g, "")      // Remove tags safely
-    .replace(/([a-z])-\n([a-z])/ig, "$1$2") // Fix hyphenation across lines
-    .replace(/[ \t]+/g, " ")                // Collapse multiple spaces
+    .replace(/\r\n/g, "\n") // Standardize newlines
+    .replace(/\//g, "") // ✅ FIXED: Remove forward slashes safely
+    .replace(/([a-z])-\n([a-z])/gi, "$1$2") // Fix hyphenation across lines
+    .replace(/[ \t]+/g, " ") // Collapse multiple spaces
     .trim();
 }
 
@@ -94,17 +110,23 @@ function isNewRuleStart(line) {
 function runRuleBasedExtraction(rawText) {
   const startTime = Date.now();
   const text = normalizeTextStream(rawText);
-  
+
   const results = {
-    waiting_periods: [], financial_limits: [], exclusions: [],
-    coverage: [], claim_rejection: [],
-    _meta: { rulesMatched: 0, processingTimeMs: 0 }
+    waiting_periods: [],
+    financial_limits: [],
+    exclusions: [],
+    coverage: [],
+    claim_rejection: [],
+    _meta: { rulesMatched: 0, processingTimeMs: 0 },
   };
 
   if (!text) return results;
 
-  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
   // STATE VARIABLES
   let currentSection = null;
   let ruleBuffer = "";
@@ -113,7 +135,7 @@ function runRuleBasedExtraction(rawText) {
   // ─── HELPER: FLUSH BUFFER ───
   const flushBuffer = () => {
     if (!ruleBuffer || ruleBuffer.length < 15) {
-      ruleBuffer = ""; 
+      ruleBuffer = "";
       return;
     }
 
@@ -124,8 +146,11 @@ function runRuleBasedExtraction(rawText) {
       .trim();
 
     // Skip Garbage
-    if (GARBAGE_TERMS.some(t => cleanRule.toLowerCase().includes(t)) || /^\d+$/.test(cleanRule)) {
-      ruleBuffer = ""; 
+    if (
+      GARBAGE_TERMS.some((t) => cleanRule.toLowerCase().includes(t)) ||
+      /^\d+$/.test(cleanRule)
+    ) {
+      ruleBuffer = "";
       return;
     }
 
@@ -141,13 +166,17 @@ function runRuleBasedExtraction(rawText) {
     // 1. If we are in a known section, use that.
     // 2. If not, try to guess based on keywords (Fallback).
     let category = currentSection;
-    
+
     if (!category) {
       const lower = cleanRule.toLowerCase();
-      if (/waiting period|months|years/i.test(lower) && /\d+/.test(lower)) category = "waiting_periods";
-      else if (/limit|capped|upto|sub-limit|co-pay/i.test(lower)) category = "financial_limits";
-      else if (/excluded|not covered|not payable/i.test(lower)) category = "exclusions";
-      else if (/notify|intimate|submit|claim/i.test(lower)) category = "claim_rejection";
+      if (/waiting period|months|years/i.test(lower) && /\d+/.test(lower))
+        category = "waiting_periods";
+      else if (/limit|capped|upto|sub-limit|co-pay/i.test(lower))
+        category = "financial_limits";
+      else if (/excluded|not covered|not payable/i.test(lower))
+        category = "exclusions";
+      else if (/notify|intimate|submit|claim/i.test(lower))
+        category = "claim_rejection";
     }
 
     // Add to results if we have a category
@@ -156,7 +185,7 @@ function runRuleBasedExtraction(rawText) {
         category: category,
         text: cleanRule,
         extractionMethod: "state_machine_v4",
-        confidence: 0.95
+        confidence: 0.95,
       });
       results._meta.rulesMatched++;
     }
@@ -188,7 +217,7 @@ function runRuleBasedExtraction(rawText) {
       }
     }
   }
-  
+
   // Final Flush
   flushBuffer();
 
@@ -205,16 +234,16 @@ function runRuleBasedExtraction(rawText) {
  */
 function routeRuleResults(ruleResults, collected) {
   const categoryMap = {
-    'waiting_periods': 'waiting_periods',
-    'financial_limits': 'financial_limits',
-    'exclusions': 'exclusions',
-    'coverage': 'coverage',
-    'claim_rejection': 'claim_rejection_conditions'
+    waiting_periods: "waiting_periods",
+    financial_limits: "financial_limits",
+    exclusions: "exclusions",
+    coverage: "coverage",
+    claim_rejection: "claim_rejection_conditions",
   };
 
   for (const [ruleCat, serverCat] of Object.entries(categoryMap)) {
     if (!ruleResults[ruleCat]) continue;
-    
+
     for (const item of ruleResults[ruleCat]) {
       if (item && item.text) {
         // Basic check to avoid exact duplicates in the final output
@@ -227,6 +256,6 @@ function routeRuleResults(ruleResults, collected) {
 }
 
 // Dummy export for RULE_PATTERNS to maintain API compatibility
-const RULE_PATTERNS = {}; 
+const RULE_PATTERNS = {};
 
 export { runRuleBasedExtraction, routeRuleResults, RULE_PATTERNS };
