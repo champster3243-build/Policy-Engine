@@ -6,8 +6,8 @@
  * spatial stream rather than just strings.
  * * * KEY INNOVATIONS:
  * 1. PRE-PROCESSOR: Flattens PDF "visual formatting" (newlines, hyphenation) into logical streams.
- * 2. ELASTIC ANCHORING: Finds a value (e.g. "5000") and expands left/right to find the full context.
- * 3. SEMANTIC GATEKEEPER: Aggressively filters "administrative noise" (e.g. "Page 1", "Annexure").
+ * 2. ELASTIC ANCHORING: Finds a value (e.g. "5000") and expands left/right to find context.
+ * 3. SEMANTIC BOUNDARIES: Uses logic to stop expanding when it hits a new rule (bullets, periods).
  * 4. FUZZY DEDUPLICATION: Prevents "Room Rent: 5000" and "Room Rent capped at 5000" duplicates.
  *******************************************************************************************/
 
@@ -41,15 +41,15 @@ function normalizeTextStream(text) {
 function isGarbage(text) {
   const t = text.toLowerCase();
   
-  // Blocklist of administrative terms
+  // Blocklist of administrative terms that confuse the engine
   const BLOCKLIST = [
     "total rules", "page", "annexure", "list i", "list ii", "list iii", 
     "irda", "reg no", "cin:", "uin:", "corporate office", "registered office",
-    "sum insured", "premium", "deductible", "cumulative bonus", // Contextless terms
-    "policy period", "date of inception", "schedule of benefits"
+    "sum insured", "premium", "deductible", "cumulative bonus", 
+    "policy period", "date of inception", "schedule of benefits", "total rules"
   ];
 
-  if (t.length < 10) return true; // Too short
+  if (t.length < 15) return true; // Too short to be a meaningful rule
   if (BLOCKLIST.some(term => t.includes(term))) return true;
   if (/^[\d\W]+$/.test(t)) return true; // Only numbers/symbols
   
@@ -57,7 +57,7 @@ function isGarbage(text) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 2: THE ELASTIC EXPANSION LOGIC
+// SECTION 2: THE ELASTIC EXPANSION LOGIC (THE BRAIN)
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -65,10 +65,10 @@ function isGarbage(text) {
  * Walks backwards and forwards from a match to build a complete sentence.
  * * @param {string} fullText - The normalized text stream
  * @param {object} match - The regex match object
- * @param {number} leftChars - Max characters to look back
- * @param {number} rightChars - Max characters to look forward
+ * @param {number} leftChars - Max characters to look back (Subject Search)
+ * @param {number} rightChars - Max characters to look forward (Condition Search)
  */
-function elasticExpand(fullText, match, leftChars = 100, rightChars = 100) {
+function elasticExpand(fullText, match, leftChars = 120, rightChars = 120) {
   const startIdx = match.index;
   const endIdx = startIdx + match[0].length;
 
@@ -76,19 +76,25 @@ function elasticExpand(fullText, match, leftChars = 100, rightChars = 100) {
   // Look back X chars, but stop at major punctuation (. : ;) or Bullet points
   let leftContext = fullText.slice(Math.max(0, startIdx - leftChars), startIdx);
   
-  // Find the last "Sentence Breaker"
-  // Breakers: Period, Colon, Semicolon, Bullet (•, -, >)
-  const leftBreakerRegex = /[.:;•\->]|\d+\.\s/; 
-  const lastBreaker = leftContext.search(new RegExp(leftBreakerRegex.source + "[^" + leftBreakerRegex.source + "]*$"));
+  // Find the last "Sentence Breaker" to ensure we don't bleed into the previous rule.
+  // Breakers: Period, Colon, Semicolon, Bullet (•, -, >), or Numbered List (1.)
+  const leftBreakerRegex = /[.:;!?•\->]|\d+\.\s/; 
   
-  if (lastBreaker !== -1) {
-    leftContext = leftContext.slice(lastBreaker + 1); // Take everything after the breaker
+  // Search for the *last* breaker in the left chunk
+  // We reverse the string to find the "closest" breaker moving backwards
+  const reversedLeft = leftContext.split("").reverse().join("");
+  const firstBreakerIndex = reversedLeft.search(leftBreakerRegex);
+  
+  if (firstBreakerIndex !== -1) {
+    // Cut off everything before the breaker
+    const cutIndex = leftContext.length - firstBreakerIndex;
+    leftContext = leftContext.slice(cutIndex); 
   }
   
   // 2. EXPAND RIGHT (Find the Condition)
   // Look forward X chars, but stop at next sentence end
   let rightContext = fullText.slice(endIdx, Math.min(fullText.length, endIdx + rightChars));
-  const rightBreaker = rightContext.search(/[.:;•\->]|\d+\.\s/);
+  const rightBreaker = rightContext.search(/[.:;!?•\->]|\d+\.\s/);
   
   if (rightBreaker !== -1) {
     rightContext = rightContext.slice(0, rightBreaker); // Take everything up to the breaker
@@ -97,8 +103,8 @@ function elasticExpand(fullText, match, leftChars = 100, rightChars = 100) {
   // 3. ASSEMBLE
   let completeRule = (leftContext + match[0] + rightContext).trim();
   
-  // 4. CLEANUP (Remove leading non-alphanumeric chars)
-  completeRule = completeRule.replace(/^[^a-zA-Z0-9]+/, "");
+  // 4. CLEANUP (Remove leading non-alphanumeric chars left by split)
+  completeRule = completeRule.replace(/^[^a-zA-Z0-9"(]+/, "");
 
   return completeRule;
 }
@@ -116,10 +122,10 @@ const RULE_PATTERNS = {
       // Anchor: "24 months" or "2 years"
       pattern: /(\d+)\s*(?:months?|years?|days?)/gi,
       extract: (match, fullText) => {
-        // Expand to check if it's actually a waiting period rule
-        const rule = elasticExpand(fullText, match, 80, 50);
+        // Use Elastic Expand to find "Maternity" before "9 months"
+        const rule = elasticExpand(fullText, match, 100, 60);
         
-        // Validation: Must contain "waiting period" or "exclusion" or "after"
+        // Strict Validation: Must look like a waiting period rule
         if (!/waiting period|exclusion|after continuous|prior to|before coverage/i.test(rule)) return null;
         
         return {
@@ -130,11 +136,11 @@ const RULE_PATTERNS = {
       }
     },
     {
-      name: "specific_disease_waiting",
-      // Anchor: Specific diseases list followed by time
+      name: "specific_disease_anchor",
+      // Anchor: List of diseases followed by time
       pattern: /(maternity|cataract|hernia|hysterectomy|joint replacement|bariatric|ped|pre-existing)[^.:]*?(\d+)\s*(months?|years?)/gi,
       extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 20, 40);
+        const rule = elasticExpand(fullText, match, 30, 50);
         return {
           category: "waiting_period",
           text: rule,
@@ -151,13 +157,13 @@ const RULE_PATTERNS = {
       // Anchor: "Rs. 5000" or "₹ 5000"
       pattern: /(?:rs\.?|₹|inr)\s*([\d,]+)/gi,
       extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 100, 60);
+        const rule = elasticExpand(fullText, match, 120, 80);
         
         // NOISE FILTER: Ignore if it's "Sum Insured" or "Premium"
-        if (/sum insured|premium|total|deductible/i.test(rule)) return null;
+        if (/sum insured|premium|total|deductible|balance/i.test(rule)) return null;
         
         // VALIDATION: Must imply a limit
-        if (!/limit|capped|upto|maximum|sub-limit|restricted to|co-pay/i.test(rule)) return null;
+        if (!/limit|capped|upto|maximum|sub-limit|restricted to|co-pay|subject to/i.test(rule)) return null;
 
         return {
           category: "financial_limit",
@@ -171,13 +177,13 @@ const RULE_PATTERNS = {
       // Anchor: "20%" or "50 %"
       pattern: /(\d+)\s*%/gi,
       extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 100, 60);
+        const rule = elasticExpand(fullText, match, 120, 80);
         
         // NOISE FILTER
-        if (/health score|average|total|sum insured/i.test(rule)) return null;
+        if (/health score|average|total|sum insured|rate/i.test(rule)) return null;
         
-        // VALIDATION: Look for keywords
-        if (!/co-pay|limit|capped|upto|of sum insured|claim/i.test(rule)) return null;
+        // VALIDATION: Look for limit keywords
+        if (!/co-pay|limit|capped|upto|of sum insured|claim|payable/i.test(rule)) return null;
 
         return {
           category: "financial_limit",
@@ -193,29 +199,30 @@ const RULE_PATTERNS = {
     {
       name: "anchor_exclusion_phrase",
       // Anchor: "is excluded", "not covered"
-      pattern: /(?:is|are|shall be)\s+(?:specifically\s+)?(excluded|not covered|not payable)/gi,
+      pattern: /(?:is|are|shall be)\s+(?:specifically\s+)?(excluded|not covered|not payable|not admissible)/gi,
       extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 120, 20); // Look far back for the subject
+        // Look FAR back (150 chars) because "Subject ... long description ... is excluded"
+        const rule = elasticExpand(fullText, match, 150, 30); 
         
-        // NOISE FILTER
-        if (/claim arising|expenses related to/i.test(rule) && rule.length < 20) return null;
+        // NOISE FILTER: Don't capture generic "claims are excluded" without a subject
+        if (/claim arising|expenses related to/i.test(rule) && rule.length < 30) return null;
 
         return {
           category: "exclusion",
           text: rule,
-          confidence: 0.90
+          confidence: 0.92
         };
       }
     },
     {
       name: "anchor_specific_exclusion",
-      // Anchor: Specific robust keywords
-      pattern: /(war|terrorism|nuclear|cosmetic|obesity|infertility|hazardous sports|breach of law)/gi,
+      // Anchor: Robust keywords that are ALWAYS exclusions
+      pattern: /(war|terrorism|nuclear|cosmetic|obesity|infertility|hazardous sports|breach of law|alcohol|drug abuse)/gi,
       extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 50, 80);
+        const rule = elasticExpand(fullText, match, 60, 100);
         
         // Validate it's an exclusion statement
-        if (!/excluded|not covered|not payable/i.test(rule)) return null;
+        if (!/excluded|not covered|not payable|not admissible/i.test(rule)) return null;
 
         return {
           category: "exclusion",
@@ -233,10 +240,10 @@ const RULE_PATTERNS = {
       // Anchor: "24 hours", "15 days"
       pattern: /(\d+)\s*(hours?|days?)/gi,
       extract: (match, fullText) => {
-        const rule = elasticExpand(fullText, match, 100, 50);
+        const rule = elasticExpand(fullText, match, 100, 60);
         
         // Only capture if related to notification/submission
-        if (!/notify|intimate|submit|claim form|documents/i.test(rule)) return null;
+        if (!/notify|intimate|submit|claim form|documents|report/i.test(rule)) return null;
 
         return {
           category: "claim_rejection",
@@ -253,8 +260,9 @@ const RULE_PATTERNS = {
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * FUZZY SIMILARITY CHECK
- * Returns true if strings are >70% similar (Token Jaccard Index).
+ * FUZZY SIMILARITY CHECK (Jaccard Index)
+ * Returns true if strings are >75% similar.
+ * Solves: "Room rent 5000" vs "Room rent limit 5000"
  */
 function isSimilar(str1, str2) {
   // Normalize: lowercase, remove non-alphanumeric
@@ -264,7 +272,7 @@ function isSimilar(str1, str2) {
   // Optimization: Check substring inclusion first
   if (s1.includes(s2) || s2.includes(s1)) return true;
   
-  // Jaccard Token Logic
+  // Jaccard Token Logic (Set Overlap)
   const set1 = new Set(s1.split(''));
   const set2 = new Set(s2.split(''));
   const intersection = new Set([...set1].filter(x => set2.has(x)));
@@ -297,7 +305,8 @@ function runRuleBasedExtraction(rawText) {
       let match;
       let matchCount = 0;
       
-      while ((match = rule.pattern.exec(text)) !== null && matchCount < 8) {
+      // Limit matches per rule to prevent infinite loops on bad regex
+      while ((match = rule.pattern.exec(text)) !== null && matchCount < 10) {
         matchCount++;
         try {
           const extracted = rule.extract(match, text);
@@ -328,6 +337,9 @@ function runRuleBasedExtraction(rawText) {
   return results;
 }
 
+/**
+ * ROUTER: CONNECTS ENGINE TO SERVER
+ */
 function routeRuleResults(ruleResults, collected) {
   const categoryMap = {
     'waiting_periods': 'waiting_periods',
@@ -341,6 +353,7 @@ function routeRuleResults(ruleResults, collected) {
     const items = ruleResults[ruleCategory] || [];
     for (const item of items) {
       if (collected[serverCategory] && item.text) {
+        // Double check dedup against existing collection
         const isDup = collected[serverCategory].some(existing => isSimilar(existing, item.text));
         if (!isDup) {
           collected[serverCategory].push(item.text);
