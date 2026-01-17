@@ -1,48 +1,20 @@
 /*******************************************************************************************
- * ruleEngine.js (v5.2 - PRODUCTION HARDENED + SERVER INTEGRATION FIXES)
+ * ruleEngine.js (v5.1 - PRODUCTION-HARDENED)
  * 
- * Changes from v5.1:
- * - Fixed routeRuleResults category mapping (claim_rejection -> claim_rejection_conditions)
- * - Added VALID_CATEGORIES constant for consistency
- * - Improved anchor token extraction (skip common words)
- * - Added reset() method to DeduplicationEngine
- * - Better handling of empty/null inputs throughout
- * - Explicit exports for all server-used functions
+ * Key fixes from v5.0:
+ * - Safer OCR normalization (no destructive character replacements)
+ * - Higher similarity threshold (0.92 default)
+ * - Stronger categorization requirements (needs strong signal to override section)
+ * - Candidate filtering for O(1) average dedupe lookups
+ * - Cross-chunk continuation support via trailingFragment
+ * - Better rule boundary detection
+ * - Removed over-aggressive garbage blockers
  *******************************************************************************************/
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// SECTION 1: CONSTANTS & CONFIGURATION
+// SECTION 1: CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Valid rule categories - single source of truth
- */
-const VALID_CATEGORIES = [
-  "waiting_periods",
-  "financial_limits",
-  "exclusions",
-  "coverage",
-  "claim_rejection"
-];
-
-/**
- * Common words to skip when extracting anchor tokens
- */
-const COMMON_WORDS = new Set([
-  "the", "and", "for", "are", "but", "not", "you", "all", "can", "her", "was",
-  "one", "our", "out", "has", "have", "been", "were", "being", "their", "there",
-  "will", "shall", "would", "could", "should", "this", "that", "with", "from",
-  "they", "which", "about", "into", "through", "during", "before", "after",
-  "above", "below", "between", "under", "again", "further", "then", "once",
-  "here", "where", "when", "what", "other", "some", "such", "only", "same",
-  "than", "very", "just", "also", "back", "been", "being", "both", "each",
-  "insured", "insurance", "policy", "cover", "covered", "claim", "claims",
-  "period", "limit", "amount", "sum", "benefit", "benefits", "treatment",
-]);
-
-/**
- * Section header patterns with fuzzy matching support
- */
 const SECTION_PATTERNS = [
   // Waiting periods
   { pattern: /waiting\s*period/i, category: "waiting_periods", priority: 10 },
@@ -72,6 +44,8 @@ const SECTION_PATTERNS = [
 
 /**
  * Content signals for category detection
+ * Strong signals can override section context
+ * Weak signals only contribute when combined with section context
  */
 const CONTENT_SIGNALS = {
   waiting_periods: {
@@ -147,7 +121,7 @@ const CONTENT_SIGNALS = {
 };
 
 /**
- * Procedure list indicators
+ * Procedure list indicators - these signal enumeration rather than rules
  */
 const PROCEDURE_LIST_INDICATORS = {
   headerPatterns: [
@@ -155,6 +129,7 @@ const PROCEDURE_LIST_INDICATORS = {
     /following\s*(?:are|is)\s*(?:covered|included)\s*:/i,
     /coverage\s*(?:includes?|for)\s*:/i,
   ],
+  // A "list zone" has many short items without modal verbs
   modalVerbs: /\b(?:shall|will|must|should|may|can|cannot|not)\b/i,
   maxItemLength: 80,
   minItemsForList: 4,
@@ -162,6 +137,7 @@ const PROCEDURE_LIST_INDICATORS = {
 
 /**
  * Garbage patterns - content to completely ignore
+ * NOTE: Be conservative here - false positives lose real rules
  */
 const GARBAGE_PATTERNS = [
   /^(?:page|pg\.?)\s*\d+\s*(?:of\s*\d+)?$/i,
@@ -180,17 +156,14 @@ const GARBAGE_PATTERNS = [
 // SECTION 2: TEXT PROCESSING UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Normalize text for processing
- */
 function normalizeText(text) {
-  if (!text || typeof text !== "string") return "";
+  if (!text) return "";
   
-  return text
+  return String(text)
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
-    .replace(/([a-z])-\n([a-z])/gi, "$1$2")
+    .replace(/([a-z])-\n([a-z])/gi, "$1$2")  // Fix hyphenated line breaks
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[''`]/g, "'")
@@ -201,15 +174,18 @@ function normalizeText(text) {
 
 /**
  * Create dedupe key - CONSERVATIVE normalization
+ * No aggressive character substitution that destroys words
  */
 function createDedupeKey(text) {
-  if (!text || typeof text !== "string") return "";
+  if (!text) return "";
   
-  return text
+  return String(text)
     .toLowerCase()
     .replace(/\s+/g, " ")
+    // Remove punctuation but keep word boundaries
     .replace(/[^\w\s]/g, " ")
     .replace(/\s+/g, " ")
+    // Only remove very short words (articles, etc)
     .split(" ")
     .filter(w => w.length > 2)
     .join(" ")
@@ -217,18 +193,16 @@ function createDedupeKey(text) {
 }
 
 /**
- * Extract anchor tokens for candidate filtering
- * IMPROVED: Skip common words for better selectivity
+ * Extract "anchor tokens" for candidate filtering
+ * These are longer, less common tokens that help narrow similarity searches
  */
 function extractAnchorTokens(text, count = 3) {
-  if (!text || typeof text !== "string") return [];
-  
   const key = createDedupeKey(text);
   const tokens = key.split(" ");
   
-  // Filter out common words and sort by length
+  // Sort by length descending, take longest tokens
   return tokens
-    .filter(t => t.length > 4 && !COMMON_WORDS.has(t))
+    .filter(t => t.length > 4)
     .sort((a, b) => b.length - a.length)
     .slice(0, count);
 }
@@ -237,8 +211,6 @@ function extractAnchorTokens(text, count = 3) {
  * Calculate Jaccard similarity between two strings
  */
 function calculateSimilarity(str1, str2) {
-  if (!str1 || !str2) return 0;
-  
   const key1 = createDedupeKey(str1);
   const key2 = createDedupeKey(str2);
   
@@ -261,18 +233,14 @@ function calculateSimilarity(str1, str2) {
 // SECTION 3: DETECTION FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Detect section header
- */
 function detectSectionHeader(line) {
-  if (!line || typeof line !== "string") return null;
-  
-  const clean = line.trim();
+  const clean = String(line || "").trim();
   if (clean.length < 3 || clean.length > 60) return null;
   
+  // Headers are typically short and may be uppercase or title case
   const looksLikeHeader = 
     /^[A-Z\s]+$/.test(clean) ||
-    (/^[A-Z]/.test(clean) && clean.length < 40) ||
+    /^[A-Z]/.test(clean) && clean.length < 40 ||
     /^\d+\.?\s*[A-Z]/.test(clean) ||
     /^[IVXLC]+\.?\s/i.test(clean);
   
@@ -290,13 +258,8 @@ function detectSectionHeader(line) {
   return bestMatch ? { category: bestMatch.category, confidence: bestMatch.confidence } : null;
 }
 
-/**
- * Detect if line starts a new rule
- */
 function isRuleStart(line) {
-  if (!line || typeof line !== "string") return false;
-  
-  const l = line.trim();
+  const l = String(line || "").trim();
   if (!l) return false;
   
   // Bullet points
@@ -320,25 +283,31 @@ function isRuleStart(line) {
 }
 
 /**
- * Improved continuation detection
+ * Improved continuation detection with hard boundaries
  */
-function isContinuation(line, previousLine) {
-  if (!line || !previousLine) return false;
-  
-  const l = String(line).trim();
-  const prev = String(previousLine).trim();
+function isContinuation(line, previousLine, ruleBuffer) {
+  const l = String(line || "").trim();
+  const prev = String(previousLine || "").trim();
   
   if (!l || !prev) return false;
   
-  // HARD BOUNDARIES
+  // HARD BOUNDARIES - never continue across these
+  // Previous line ends with terminal punctuation AND next line is a new rule start
   if (/[.!?]\s*$/.test(prev) && isRuleStart(l)) return false;
+  
+  // Next line looks like a header
   if (detectSectionHeader(l)) return false;
   
   // SOFT CONTINUATION SIGNALS
+  // Line starts with lowercase = likely continuation
   if (/^[a-z]/.test(l)) return true;
+  
+  // Previous line ends with conjunction or incomplete phrase
   if (/(?:and|or|but|that|which|where|when|if|unless|provided|including|excluding|such\s+as|,)\s*$/i.test(prev)) {
     return true;
   }
+  
+  // Previous line ends mid-sentence
   if (!/[.!?:;]\s*$/.test(prev) && prev.length > 15) {
     return true;
   }
@@ -347,11 +316,11 @@ function isContinuation(line, previousLine) {
 }
 
 /**
- * Detect procedure list zone
+ * Check if we're likely in a procedure list zone
+ * Returns { inList: boolean, confidence: number }
  */
 function detectProcedureListZone(lines, startIndex) {
-  if (!Array.isArray(lines)) return { inList: false, confidence: 0 };
-  
+  // Look ahead for list-like patterns
   let shortItemCount = 0;
   let itemsWithoutModals = 0;
   const checkCount = Math.min(8, lines.length - startIndex);
@@ -368,11 +337,11 @@ function detectProcedureListZone(lines, startIndex) {
     }
   }
   
-  const density = shortItemCount / Math.max(checkCount, 1);
+  // High density of short items without modal verbs = likely a list
+  const density = shortItemCount / checkCount;
   const noModalRatio = itemsWithoutModals / Math.max(shortItemCount, 1);
   
-  const isLikelyList = density > 0.7 && noModalRatio > 0.6 && 
-    shortItemCount >= PROCEDURE_LIST_INDICATORS.minItemsForList;
+  const isLikelyList = density > 0.7 && noModalRatio > 0.6 && shortItemCount >= PROCEDURE_LIST_INDICATORS.minItemsForList;
   
   return {
     inList: isLikelyList,
@@ -385,13 +354,15 @@ function detectProcedureListZone(lines, startIndex) {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * Categorize content with strict requirements for overriding section context
+ * Categorize content with STRICT requirements for overriding section context
+ * 
+ * Rules:
+ * - To STAY in section: weak signals + section context is enough
+ * - To OVERRIDE section: must have at least 1 strong signal
  */
 function categorizeByContent(text, sectionContext = null) {
-  if (!text || typeof text !== "string") return null;
-  
-  const cleanText = text.trim();
-  if (cleanText.length < 10) return null;
+  const cleanText = String(text || "").trim();
+  if (!cleanText || cleanText.length < 10) return null;
   
   const scores = {};
   const details = {};
@@ -408,6 +379,10 @@ function categorizeByContent(text, sectionContext = null) {
       if (pattern.test(cleanText)) weakCount++;
     }
     
+    // Score calculation:
+    // - Strong signal: 10 points each
+    // - Weak signal: 3 points each
+    // - Section context match: 5 points
     let score = (strongCount * 10) + (weakCount * 3);
     if (category === sectionContext) score += 5;
     
@@ -428,9 +403,11 @@ function categorizeByContent(text, sectionContext = null) {
     }
   }
   
-  // STRICT OVERRIDE RULE
+  // STRICT OVERRIDE RULE:
+  // If best category differs from section context, require at least 1 strong signal
   if (bestCategory && bestCategory !== sectionContext && sectionContext) {
     if (bestDetails.strongCount === 0) {
+      // Not strong enough to override - fall back to section context
       if (scores[sectionContext] >= 3) {
         return {
           category: sectionContext,
@@ -442,8 +419,9 @@ function categorizeByContent(text, sectionContext = null) {
     }
   }
   
-  // Minimum threshold
+  // Minimum threshold: score >= 5
   if (bestScore < 5) {
+    // Last resort: use section context if available
     if (sectionContext && scores[sectionContext] >= 0) {
       return {
         category: sectionContext,
@@ -468,34 +446,21 @@ function categorizeByContent(text, sectionContext = null) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// SECTION 5: DEDUPLICATION ENGINE
+// SECTION 5: DEDUPLICATION ENGINE WITH CANDIDATE FILTERING
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 class DeduplicationEngine {
   constructor(similarityThreshold = 0.92) {
     this.threshold = similarityThreshold;
     this.rules = [];
-    this.exactKeyIndex = new Map();
-    this.anchorIndex = new Map();
+    this.exactKeyIndex = new Map();      // key -> rule
+    this.anchorIndex = new Map();        // anchor token -> Set of rule indices
   }
   
   /**
-   * Reset the engine (useful for testing)
-   */
-  reset() {
-    this.rules = [];
-    this.exactKeyIndex.clear();
-    this.anchorIndex.clear();
-  }
-  
-  /**
-   * Add a rule with O(candidates) lookup using anchor-based filtering
+   * Add a rule with O(1) average lookup using anchor-based candidate filtering
    */
   addRule(text, category, confidence, metadata = {}) {
-    if (!text || typeof text !== "string") {
-      return { added: false, reason: "invalid_input" };
-    }
-    
     const key = createDedupeKey(text);
     
     if (key.length < 10) {
@@ -514,7 +479,7 @@ class DeduplicationEngine {
       return { added: false, reason: "exact_duplicate" };
     }
     
-    // Get candidates using anchor tokens
+    // Get candidate rules using anchor tokens (much faster than checking all)
     const anchors = extractAnchorTokens(text);
     const candidateIndices = new Set();
     
@@ -525,14 +490,16 @@ class DeduplicationEngine {
       }
     }
     
-    // Check similarity against candidates
+    // Check similarity only against candidates
     for (const idx of candidateIndices) {
       const existing = this.rules[idx];
       if (!existing) continue;
       
       const similarity = calculateSimilarity(text, existing.text);
       if (similarity >= this.threshold) {
+        // Keep longer version if similar confidence
         if (confidence >= existing.confidence - 0.1 && text.length > existing.text.length * 1.2) {
+          // Update existing rule
           existing.text = text;
           existing.confidence = confidence;
           existing.category = category;
@@ -569,11 +536,10 @@ class DeduplicationEngine {
   }
   
   getStats() {
-    const byCategory = this.getByCategory();
     return {
       totalRules: this.rules.length,
       byCategory: Object.fromEntries(
-        Object.entries(byCategory).map(([k, v]) => [k, v.length])
+        Object.entries(this.getByCategory()).map(([k, v]) => [k, v.length])
       )
     };
   }
@@ -590,37 +556,21 @@ const STATE = {
   IN_PROCEDURE_LIST: "in_procedure_list"
 };
 
-/**
- * Main extraction function
- */
 function runRuleBasedExtraction(rawText, options = {}) {
   const startTime = Date.now();
   const {
-    similarityThreshold = 0.92,
+    similarityThreshold = 0.92,  // Higher default - more conservative
     minRuleLength = 15,
     maxRuleLength = 2000,
-    prependFragment = null,
+    prependFragment = null,      // Cross-chunk continuation support
     debug = false
   } = options;
-  
-  // Handle null/undefined input
-  if (!rawText || typeof rawText !== "string") {
-    return buildResults(new DeduplicationEngine(similarityThreshold), {
-      rulesMatched: 0,
-      rulesRejected: 0,
-      duplicatesFound: 0,
-      processingTimeMs: Date.now() - startTime,
-      rulesApplied: ["state_machine_v5.2"],
-      sectionTransitions: [],
-      trailingFragment: null,
-    }, startTime);
-  }
   
   let text = normalizeText(rawText);
   
   // Prepend trailing fragment from previous chunk
-  if (prependFragment && typeof prependFragment === "string" && prependFragment.trim()) {
-    text = prependFragment.trim() + " " + text;
+  if (prependFragment && typeof prependFragment === "string") {
+    text = prependFragment + " " + text;
   }
   
   const dedupe = new DeduplicationEngine(similarityThreshold);
@@ -630,9 +580,9 @@ function runRuleBasedExtraction(rawText, options = {}) {
     rulesRejected: 0,
     duplicatesFound: 0,
     processingTimeMs: 0,
-    rulesApplied: ["state_machine_v5.2"],
+    rulesApplied: ["state_machine_v5.1"],
     sectionTransitions: [],
-    trailingFragment: null,
+    trailingFragment: null,  // For cross-chunk continuation
     debug: debug ? [] : undefined
   };
   
@@ -695,7 +645,7 @@ function runRuleBasedExtraction(rawText, options = {}) {
       categorization.confidence,
       {
         reason: categorization.reason,
-        extractionMethod: "state_machine_v5.2",
+        extractionMethod: "state_machine_v5.1",
         sectionContext: currentSection
       }
     );
@@ -713,6 +663,7 @@ function runRuleBasedExtraction(rawText, options = {}) {
   
   const emitProcedureList = () => {
     if (procedureListBuffer.length < PROCEDURE_LIST_INDICATORS.minItemsForList) {
+      // Not enough items - treat them as individual rules instead
       for (const item of procedureListBuffer) {
         ruleBuffer = item;
         emitRule("coverage");
@@ -722,6 +673,7 @@ function runRuleBasedExtraction(rawText, options = {}) {
       return;
     }
     
+    // Group into a single coverage entry
     const header = procedureListHeader || "Coverage includes";
     const combinedText = `${header}: ${procedureListBuffer.join("; ")}`;
     
@@ -731,7 +683,7 @@ function runRuleBasedExtraction(rawText, options = {}) {
       0.7,
       {
         reason: "procedure_list_grouped",
-        extractionMethod: "state_machine_v5.2",
+        extractionMethod: "state_machine_v5.1",
         itemCount: procedureListBuffer.length
       }
     );
@@ -748,7 +700,9 @@ function runRuleBasedExtraction(rawText, options = {}) {
     
     // Empty line handling
     if (!line) {
+      // Paragraph break may signal rule end
       if (state === STATE.BUILDING_RULE && ruleBuffer.length > 50) {
+        // Only emit if buffer ends with terminal punctuation
         if (/[.!?]\s*$/.test(ruleBuffer)) {
           emitRule();
           state = currentSection ? STATE.IN_SECTION : STATE.SCANNING;
@@ -782,6 +736,7 @@ function runRuleBasedExtraction(rawText, options = {}) {
       emitRule();
       procedureListHeader = line.replace(/:\s*$/, "");
       
+      // Check if following lines form a list
       const listZone = detectProcedureListZone(lines, i + 1);
       if (listZone.inList) {
         state = STATE.IN_PROCEDURE_LIST;
@@ -799,7 +754,7 @@ function runRuleBasedExtraction(rawText, options = {}) {
           emitRule();
           ruleBuffer = line;
           state = STATE.BUILDING_RULE;
-        } else if (isContinuation(line, previousLine) && ruleBuffer) {
+        } else if (isContinuation(line, previousLine, ruleBuffer) && ruleBuffer) {
           ruleBuffer += " " + line;
         } else if (line.length > 20) {
           emitRule();
@@ -812,9 +767,10 @@ function runRuleBasedExtraction(rawText, options = {}) {
         if (isRuleStart(line)) {
           emitRule();
           ruleBuffer = line;
-        } else if (isContinuation(line, previousLine)) {
+        } else if (isContinuation(line, previousLine, ruleBuffer)) {
           ruleBuffer += " " + line;
         } else if (/^[A-Z]/.test(line) && /[.!?]\s*$/.test(ruleBuffer) && line.length > 20) {
+          // New sentence starting, previous complete - emit and start new
           emitRule();
           ruleBuffer = line;
         } else {
@@ -830,6 +786,7 @@ function runRuleBasedExtraction(rawText, options = {}) {
             .trim();
           
           if (item.length > 3 && item.length < PROCEDURE_LIST_INDICATORS.maxItemLength) {
+            // Check if item looks like a rule (has modal verbs) - if so, emit list and switch
             if (PROCEDURE_LIST_INDICATORS.modalVerbs.test(item)) {
               emitProcedureList();
               ruleBuffer = line;
@@ -842,10 +799,12 @@ function runRuleBasedExtraction(rawText, options = {}) {
           emitProcedureList();
           state = STATE.IN_SECTION;
         } else if (line.length > 100) {
+          // Long line = probably end of list
           emitProcedureList();
           ruleBuffer = line;
           state = STATE.BUILDING_RULE;
         } else if (!isRuleStart(line) && line.length < PROCEDURE_LIST_INDICATORS.maxItemLength) {
+          // Non-bulleted short item in list zone
           if (!PROCEDURE_LIST_INDICATORS.modalVerbs.test(line) && line.length > 3) {
             procedureListBuffer.push(line);
           }
@@ -856,8 +815,9 @@ function runRuleBasedExtraction(rawText, options = {}) {
     previousLine = line;
   }
   
-  // Handle trailing fragment
+  // Handle trailing fragment for cross-chunk continuation
   if (ruleBuffer && !/[.!?]\s*$/.test(ruleBuffer)) {
+    // Buffer doesn't end with terminal punctuation - might continue in next chunk
     meta.trailingFragment = ruleBuffer;
     log(`Trailing fragment: ${ruleBuffer.slice(0, 50)}...`);
   } else {
@@ -869,9 +829,6 @@ function runRuleBasedExtraction(rawText, options = {}) {
   return buildResults(dedupe, meta, startTime);
 }
 
-/**
- * Build final results object
- */
 function buildResults(dedupe, meta, startTime) {
   const byCategory = dedupe.getByCategory();
   
@@ -904,28 +861,21 @@ function buildResults(dedupe, meta, startTime) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// SECTION 7: SERVER INTEGRATION HELPERS
+// SECTION 7: SERVER INTEGRATION
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Category mapping from rule engine to server's collected structure
- * FIXED: claim_rejection -> claim_rejection_conditions
- */
-const SERVER_CATEGORY_MAP = {
-  waiting_periods: "waiting_periods",
-  financial_limits: "financial_limits",
-  exclusions: "exclusions",
-  coverage: "coverage",
-  claim_rejection: "claim_rejection_conditions"  // <-- FIXED
-};
-
-/**
- * Route extracted rules to server's collected data structure
- */
 function routeRuleResults(ruleResults, collected) {
   if (!ruleResults || !collected) return;
   
-  for (const [ruleCat, serverCat] of Object.entries(SERVER_CATEGORY_MAP)) {
+  const categoryMap = {
+    waiting_periods: "waiting_periods",
+    financial_limits: "financial_limits",
+    exclusions: "exclusions",
+    coverage: "coverage",
+    claim_rejection: "claim_rejection_conditions"
+  };
+  
+  for (const [ruleCat, serverCat] of Object.entries(categoryMap)) {
     const rules = ruleResults?.[ruleCat];
     if (!Array.isArray(rules)) continue;
     
@@ -933,12 +883,10 @@ function routeRuleResults(ruleResults, collected) {
       const text = item?.text;
       if (!text || typeof text !== "string") continue;
       
-      // Ensure target array exists
       if (!Array.isArray(collected[serverCat])) {
         collected[serverCat] = [];
       }
       
-      // Avoid duplicates
       if (!collected[serverCat].includes(text)) {
         collected[serverCat].push(text);
       }
@@ -948,15 +896,9 @@ function routeRuleResults(ruleResults, collected) {
 
 /**
  * Process multiple chunks with cross-chunk continuation
+ * This is the recommended way to process chunked PDFs
  */
 function processChunksWithContinuation(chunks, options = {}) {
-  if (!Array.isArray(chunks)) {
-    return buildResults(new DeduplicationEngine(), {
-      rulesMatched: 0,
-      rulesApplied: ["state_machine_v5.2_multi_chunk"]
-    }, Date.now());
-  }
-  
   const dedupe = new DeduplicationEngine(options.similarityThreshold || 0.92);
   let trailingFragment = null;
   
@@ -968,15 +910,14 @@ function processChunksWithContinuation(chunks, options = {}) {
   };
   
   for (const chunk of chunks) {
-    if (!chunk || typeof chunk !== "string") continue;
-    
     const result = runRuleBasedExtraction(chunk, {
       ...options,
       prependFragment: trailingFragment
     });
     
     // Add rules to global dedupe
-    for (const cat of VALID_CATEGORIES) {
+    const categories = ["waiting_periods", "financial_limits", "exclusions", "coverage", "claim_rejection"];
+    for (const cat of categories) {
       for (const rule of result[cat] || []) {
         dedupe.addRule(rule.text, rule.category, rule.confidence, {
           extractionMethod: rule.extractionMethod,
@@ -985,17 +926,17 @@ function processChunksWithContinuation(chunks, options = {}) {
       }
     }
     
-    trailingFragment = result._meta?.trailingFragment || null;
-    allMeta.totalRulesMatched += result._meta?.rulesMatched || 0;
-    allMeta.totalDuplicates += result._meta?.duplicatesFound || 0;
+    trailingFragment = result._meta.trailingFragment;
+    allMeta.totalRulesMatched += result._meta.rulesMatched;
+    allMeta.totalDuplicates += result._meta.duplicatesFound;
     allMeta.chunksProcessed++;
-    allMeta.processingTimeMs += result._meta?.processingTimeMs || 0;
+    allMeta.processingTimeMs += result._meta.processingTimeMs;
   }
   
   return buildResults(dedupe, {
     ...allMeta,
     rulesMatched: dedupe.getStats().totalRules,
-    rulesApplied: ["state_machine_v5.2_multi_chunk"]
+    rulesApplied: ["state_machine_v5.1_multi_chunk"]
   }, Date.now() - allMeta.processingTimeMs);
 }
 
@@ -1003,41 +944,22 @@ function processChunksWithContinuation(chunks, options = {}) {
 // SECTION 8: EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Export patterns for external inspection/testing
- */
 const RULE_PATTERNS = {
   SECTION_PATTERNS,
   CONTENT_SIGNALS,
   PROCEDURE_LIST_INDICATORS,
-  GARBAGE_PATTERNS,
-  VALID_CATEGORIES,
-  SERVER_CATEGORY_MAP,
+  GARBAGE_PATTERNS
 };
 
 export {
-  // Main functions
   runRuleBasedExtraction,
   routeRuleResults,
   processChunksWithContinuation,
-  
-  // Utilities (used by server.js for fuzzy dedup)
+  RULE_PATTERNS,
+  // Utilities for testing
   createDedupeKey,
   calculateSimilarity,
-  extractAnchorTokens,
-  
-  // For testing/debugging
   categorizeByContent,
   detectSectionHeader,
-  normalizeText,
-  isRuleStart,
-  isContinuation,
-  
-  // Classes
-  DeduplicationEngine,
-  
-  // Constants
-  RULE_PATTERNS,
-  VALID_CATEGORIES,
-  SERVER_CATEGORY_MAP,
+  DeduplicationEngine
 };
