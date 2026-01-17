@@ -1,14 +1,16 @@
 /*******************************************************************************************
- * SERVER.JS (v1.7 - HYBRID ENGINE + RULE ENGINE v5.1 INTEGRATION)
+ * SERVER.JS (v1.8 - REFINED HYBRID ENGINE)
  * ==================================================================================
- * CHANGES FROM v1.6:
- * - Integrated rule engine v5.1 with cross-chunk continuation
- * - Added fuzzy deduplication for near-duplicate rules
- * - Preserved confidence scores in CPDM output
- * - Fixed potential crashes from undefined _meta fields
+ * CHANGES FROM v1.7:
+ * - Fixed race condition in cross-chunk continuation (sequential rule engine pass)
+ * - Fixed fuzzy dedup "keep longer" bug
+ * - Added cross-source deduplication (rule engine vs Gemini)
+ * - Improved error boundaries
+ * - Added processing mode selection (fast/balanced/thorough)
+ * - Better logging with timing breakdowns
  *******************************************************************************************/
 
-console.log("=== SERVER.JS FILE LOADED (v1.7 HYBRID + RULE ENGINE v5.1) ===");
+console.log("=== SERVER.JS FILE LOADED (v1.8 REFINED HYBRID) ===");
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
 // SECTION 1: IMPORTS & INITIALIZATION
@@ -22,7 +24,6 @@ import pdf from "pdf-parse";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createClient } from "@supabase/supabase-js";
 import { normalizePolicy } from "./services/normalizePolicy.js";
-// ✅ UPDATED IMPORT: Include new functions from v5.1
 import { 
   runRuleBasedExtraction, 
   routeRuleResults,
@@ -38,12 +39,46 @@ app.use(cors());
 app.use(express.json());
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 2: FILE UPLOAD CONFIGURATION
+// SECTION 2: CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════════════
+
+const CONFIG = {
+  upload: {
+    maxFileSize: 10 * 1024 * 1024, // 10MB
+  },
+  processing: {
+    // Processing modes: 'fast', 'balanced', 'thorough'
+    defaultMode: 'balanced',
+    modes: {
+      fast: {
+        geminiConcurrency: 8,
+        enablePass2: false,
+        geminiTimeout: 15000,
+        skipLowSignalChunks: true,
+      },
+      balanced: {
+        geminiConcurrency: 5,
+        enablePass2: true,
+        geminiTimeout: 25000,
+        skipLowSignalChunks: false,
+      },
+      thorough: {
+        geminiConcurrency: 3,
+        enablePass2: true,
+        geminiTimeout: 40000,
+        skipLowSignalChunks: false,
+      },
+    },
+  },
+  dedup: {
+    similarityThreshold: 0.92,
+    minRuleLength: 10,
+  },
+};
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: CONFIG.upload.maxFileSize },
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -68,7 +103,7 @@ function withTimeout(promise, ms = 25000) {
   return Promise.race([
     promise,
     new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Gemini timeout")), ms)
+      setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)
     ),
   ]);
 }
@@ -82,61 +117,113 @@ function repairTextGlue(text) {
   return text.replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
+/**
+ * Timer utility for performance tracking
+ */
+class Timer {
+  constructor() {
+    this.marks = {};
+    this.start = Date.now();
+  }
+  
+  mark(name) {
+    this.marks[name] = Date.now() - this.start;
+  }
+  
+  elapsed() {
+    return Date.now() - this.start;
+  }
+  
+  report() {
+    return { ...this.marks, total: this.elapsed() };
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 4.1: FUZZY DEDUPLICATION (NEW)
+// SECTION 4.1: IMPROVED FUZZY DEDUPLICATION
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 /**
  * Fuzzy deduplicate an array of strings
- * Uses token-based similarity to catch near-duplicates
+ * FIXED: Properly handles "keep longer version" logic
  */
-function fuzzyDedup(arr, threshold = 0.92) {
+function fuzzyDedup(arr, threshold = CONFIG.dedup.similarityThreshold) {
   if (!Array.isArray(arr)) return [];
   
-  const result = [];
-  const seen = [];  // Array of { key, text }
+  const items = [];  // Array of { key, text, index }
   
-  for (const item of arr) {
-    const text = String(item || "").trim();
-    if (!text || text.length < 10) continue;
+  // First pass: collect all valid items with their keys
+  for (let i = 0; i < arr.length; i++) {
+    const text = String(arr[i] || "").trim();
+    if (!text || text.length < CONFIG.dedup.minRuleLength) continue;
     
     const key = createDedupeKey(text);
-    if (key.length < 10) continue;
+    if (key.length < CONFIG.dedup.minRuleLength) continue;
     
-    // Check for exact duplicate
-    let isDuplicate = false;
-    for (const existing of seen) {
-      if (existing.key === key) {
-        isDuplicate = true;
-        break;
+    items.push({ key, text, index: i });
+  }
+  
+  // Second pass: mark duplicates
+  const dominated = new Set();  // Indices that are duplicates of something better
+  
+  for (let i = 0; i < items.length; i++) {
+    if (dominated.has(i)) continue;
+    
+    for (let j = i + 1; j < items.length; j++) {
+      if (dominated.has(j)) continue;
+      
+      // Check exact key match
+      if (items[i].key === items[j].key) {
+        // Keep longer text
+        if (items[j].text.length > items[i].text.length * 1.1) {
+          dominated.add(i);
+          break;  // i is dominated, stop comparing
+        } else {
+          dominated.add(j);
+        }
+        continue;
       }
       
       // Check fuzzy similarity
-      const similarity = calculateSimilarity(text, existing.text);
+      const similarity = calculateSimilarity(items[i].text, items[j].text);
       if (similarity >= threshold) {
-        isDuplicate = true;
-        // Keep the longer version
-        if (text.length > existing.text.length * 1.1) {
-          existing.text = text;
-          existing.key = key;
-          // Update in result array
-          const idx = result.indexOf(existing.text);
-          if (idx === -1) {
-            const oldIdx = result.findIndex(r => calculateSimilarity(r, existing.text) >= threshold);
-            if (oldIdx !== -1) result[oldIdx] = text;
-          }
+        // Keep longer text, or first one if similar length
+        if (items[j].text.length > items[i].text.length * 1.1) {
+          dominated.add(i);
+          break;
+        } else {
+          dominated.add(j);
         }
-        break;
       }
-    }
-    
-    if (!isDuplicate) {
-      seen.push({ key, text });
-      result.push(text);
     }
   }
   
-  return result;
+  // Return non-dominated items in original order
+  return items
+    .filter((_, idx) => !dominated.has(idx))
+    .sort((a, b) => a.index - b.index)
+    .map(item => item.text);
+}
+
+/**
+ * Check if a new rule is a duplicate of existing rules
+ * Used for cross-source deduplication
+ */
+function isDuplicateOf(newText, existingTexts, threshold = CONFIG.dedup.similarityThreshold) {
+  const newKey = createDedupeKey(newText);
+  if (newKey.length < CONFIG.dedup.minRuleLength) return true;  // Too short = skip
+  
+  for (const existing of existingTexts) {
+    const existingKey = createDedupeKey(existing);
+    
+    // Exact match
+    if (newKey === existingKey) return true;
+    
+    // Fuzzy match
+    if (calculateSimilarity(newText, existing) >= threshold) return true;
+  }
+  
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -147,10 +234,7 @@ async function uploadFileToSupabase(file) {
   if (!supabase) return null;
 
   try {
-    const safeName = `${Date.now()}-${file.originalname.replace(
-      /[^a-zA-Z0-9.-]/g,
-      "_"
-    )}`;
+    const safeName = `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.-]/g, "_")}`;
 
     const { error } = await supabase.storage
       .from("raw-pdfs")
@@ -161,10 +245,7 @@ async function uploadFileToSupabase(file) {
 
     if (error) throw error;
 
-    const {
-      data: { publicUrl },
-    } = supabase.storage.from("raw-pdfs").getPublicUrl(safeName);
-
+    const { data: { publicUrl } } = supabase.storage.from("raw-pdfs").getPublicUrl(safeName);
     return publicUrl;
   } catch (err) {
     console.error("Storage Error:", err.message);
@@ -191,7 +272,7 @@ async function createJobRecord(filename, fileUrl) {
 }
 
 async function completeJobRecord(jobId, result, meta, stats) {
-  if (!supabase || jobId.startsWith("local")) return;
+  if (!supabase || String(jobId).startsWith("local")) return;
 
   try {
     const { error } = await supabase
@@ -241,9 +322,7 @@ function cleanInsurerName(s) {
 function extractInsurer(text) {
   const top = text.slice(0, 3000);
   const match =
-    top.match(
-      /([A-Za-z][A-Za-z0-9&().,\-\s]{2,}Health Insurance Company Limited)/i
-    ) ||
+    top.match(/([A-Za-z][A-Za-z0-9&().,\-\s]{2,}Health Insurance Company Limited)/i) ||
     top.match(/([A-Za-z][A-Za-z0-9&().,\-\s]{2,}Insurance Company Limited)/i);
   return match?.[1] ? cleanInsurerName(match[1]) : null;
 }
@@ -258,9 +337,7 @@ function extractPolicyMetadata(text) {
     policy_name,
     insurer: extractInsurer(text),
     uin: text.match(/UIN[:\s]*([A-Z0-9]+)/i)?.[1] || null,
-    document_type: text.includes("Terms & Conditions")
-      ? "Terms & Conditions"
-      : "Prospectus",
+    document_type: text.includes("Terms & Conditions") ? "Terms & Conditions" : "Prospectus",
     policy_year: text.match(/(20\d{2})/)?.[1] || null,
   };
 }
@@ -270,25 +347,16 @@ function extractPolicyMetadata(text) {
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 const SECTION_HEADERS = [
-  "DEFINITION",
-  "DEFINITIONS",
-  "COVER",
-  "COVERAGE",
-  "BENEFITS",
-  "EXCLUSIONS",
-  "WAITING PERIOD",
-  "PRE-EXISTING",
-  "LIMITS",
-  "CLAIMS",
-  "CONDITIONS",
-  "TERMS AND CONDITIONS",
+  "DEFINITION", "DEFINITIONS", "COVER", "COVERAGE", "BENEFITS",
+  "EXCLUSIONS", "WAITING PERIOD", "PRE-EXISTING", "LIMITS",
+  "CLAIMS", "CONDITIONS", "TERMS AND CONDITIONS",
 ];
 
 function splitIntoSections(text) {
   const sections = [];
   const regex = new RegExp(`\\n\\s*(${SECTION_HEADERS.join("|")})[^\\n]*`, "gi");
-  let lastIndex = 0,
-    match;
+  let lastIndex = 0, match;
+  
   while ((match = regex.exec(text)) !== null) {
     const part = text.slice(lastIndex, match.index).trim();
     if (part.length > 500) sections.push(part);
@@ -332,13 +400,16 @@ function createSemanticChunks(text) {
   const sections = splitIntoSections(text);
   const chunks = [];
   let idCounter = 0;
+  
   for (const section of sections) {
     for (const piece of subChunk(section, 1400, 100)) {
       const raw = piece.trim();
       if (raw.length < 300) continue;
+      
       const hint = classifyChunkHint(raw);
       const glued = repairTextGlue(raw);
       const cleaned = hint === "definitions" ? glued : cleanRuleTextSmart(glued);
+      
       if (cleaned.length < 200) continue;
       chunks.push({ id: ++idCounter, hint, raw, text: cleaned });
     }
@@ -361,14 +432,7 @@ function isDefinitionChunk(text) {
 }
 
 function isHighSignalRuleChunk(text) {
-  const signals = [
-    "we will cover",
-    "excluded",
-    "waiting period",
-    "deductible",
-    "limit",
-    "sum insured",
-  ];
+  const signals = ["we will cover", "excluded", "waiting period", "deductible", "limit", "sum insured"];
   return signals.some((s) => text.toLowerCase().includes(s));
 }
 
@@ -388,12 +452,15 @@ function classifyChunkHint(text) {
 function safeJsonParse(rawText) {
   if (!rawText) return null;
   const cleaned = rawText.replace(/```json|```/g, "").trim();
+  
   try {
     return JSON.parse(cleaned);
   } catch {}
+  
   const firstBrace = cleaned.indexOf("{");
   const lastBrace = cleaned.lastIndexOf("}");
   if (firstBrace === -1 || lastBrace <= firstBrace) return null;
+  
   try {
     return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
   } catch {
@@ -459,13 +526,17 @@ function buildPrompt(mode, text, isBatch = false) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 12: ROUTING & COLLECTION
+// SECTION 12: ROUTING & COLLECTION (WITH CROSS-SOURCE DEDUP)
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
-function routeParsed(parsed, collected) {
-  if (!parsed || parsed.type === "none") return { storedAny: false };
+/**
+ * Route Gemini-parsed results to collected, WITH cross-source deduplication
+ */
+function routeParsedWithDedup(parsed, collected) {
+  if (!parsed || parsed.type === "none") return { storedAny: false, skippedDupes: 0 };
 
   let stored = false;
+  let skippedDupes = 0;
 
   const addDef = (t, d) => {
     if (isGoodDefinitionPair(t, d)) {
@@ -476,14 +547,32 @@ function routeParsed(parsed, collected) {
 
   const addRule = (type, txt) => {
     if (isJunkRule(txt)) return;
+    
+    // Determine target array
+    let targetArray;
+    if (type === "coverage") targetArray = collected.coverage;
+    else if (type === "exclusion") targetArray = collected.exclusions;
+    else if (type === "waiting_period") targetArray = collected.waiting_periods;
+    else if (type === "financial_limit") targetArray = collected.financial_limits;
+    else if (type === "claim_rejection") targetArray = collected.claim_rejection_conditions;
+    else targetArray = collected.coverage;
+    
+    // Check for duplicates across ALL categories (cross-source dedup)
+    const allExisting = [
+      ...collected.coverage,
+      ...collected.exclusions,
+      ...collected.waiting_periods,
+      ...collected.financial_limits,
+      ...collected.claim_rejection_conditions,
+    ];
+    
+    if (isDuplicateOf(txt, allExisting)) {
+      skippedDupes++;
+      return;
+    }
+    
+    targetArray.push(txt);
     stored = true;
-    if (type === "coverage") collected.coverage.push(txt);
-    else if (type === "exclusion") collected.exclusions.push(txt);
-    else if (type === "waiting_period") collected.waiting_periods.push(txt);
-    else if (type === "financial_limit") collected.financial_limits.push(txt);
-    else if (type === "claim_rejection")
-      collected.claim_rejection_conditions.push(txt);
-    else collected.coverage.push(txt);
   };
 
   if (Array.isArray(parsed.definitions)) {
@@ -498,32 +587,180 @@ function routeParsed(parsed, collected) {
     addRule(parsed.type, parsed.rule);
   }
 
-  return { storedAny: stored };
+  return { storedAny: stored, skippedDupes };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 13: MAIN API ENDPOINT
+// SECTION 13: TWO-PHASE EXTRACTION ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Phase 1: Sequential rule engine pass (for cross-chunk continuation)
+ * This MUST be sequential to maintain fragment continuity
+ */
+async function runRuleEnginePass(chunks, collected) {
+  const stats = {
+    totalMatched: 0,
+    totalDuplicates: 0,
+    processingTimeMs: 0,
+    chunksProcessed: 0,
+  };
+  
+  let trailingFragment = null;
+  
+  console.log("   [Rule Engine] Starting sequential pass...");
+  
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    
+    // Skip definition chunks
+    if (chunk.hint === "definitions" || isDefinitionChunk(chunk.text)) {
+      continue;
+    }
+    
+    const ruleResults = runRuleBasedExtraction(chunk.text, {
+      similarityThreshold: CONFIG.dedup.similarityThreshold,
+      prependFragment: trailingFragment,
+      debug: false,
+    });
+    
+    // Capture trailing fragment for next chunk
+    trailingFragment = ruleResults?._meta?.trailingFragment || null;
+    
+    // Safe access to meta
+    const meta = ruleResults?._meta || {};
+    const rulesMatched = meta.rulesMatched || 0;
+    
+    if (rulesMatched > 0) {
+      routeRuleResults(ruleResults, collected);
+      stats.totalMatched += rulesMatched;
+      stats.totalDuplicates += meta.duplicatesFound || 0;
+    }
+    
+    stats.processingTimeMs += meta.processingTimeMs || 0;
+    stats.chunksProcessed++;
+  }
+  
+  console.log(`   [Rule Engine] Done: ${stats.totalMatched} rules from ${stats.chunksProcessed} chunks (${stats.processingTimeMs}ms)`);
+  
+  return stats;
+}
+
+/**
+ * Phase 2: Parallel Gemini pass (definitions + AI rule extraction)
+ */
+async function runGeminiPass(chunks, collected, modeConfig, isPass2 = false) {
+  const stats = {
+    parsedChunks: 0,
+    failedChunks: 0,
+    skippedDupes: 0,
+  };
+  
+  const pass2Candidates = [];
+  let index = 0;
+  
+  const worker = async (workerId) => {
+    while (true) {
+      const i = index++;
+      if (i >= chunks.length) break;
+      
+      const chunk = chunks[i];
+      const defMode = chunk.hint === "definitions" || isDefinitionChunk(chunk.text);
+      
+      // In fast mode, skip low-signal rule chunks
+      if (modeConfig.skipLowSignalChunks && !defMode && !isHighSignalRuleChunk(chunk.text)) {
+        continue;
+      }
+      
+      const logPrefix = `[${isPass2 ? "P2" : "P1"} W${workerId}]`;
+      console.log(`${logPrefix} Chunk ${i + 1}/${chunks.length} | ${defMode ? "DEF" : "RULE"}`);
+      
+      const model = getGeminiModel(defMode, isPass2 ? 4096 : 1024);
+      const prompt = buildPrompt(defMode, chunk.text, isPass2);
+      
+      try {
+        const result = await withTimeout(
+          model.generateContent(prompt),
+          modeConfig.geminiTimeout
+        );
+        const parsed = safeJsonParse(result.response.text());
+        
+        if (!parsed || parsed.type === "none") {
+          if (!isPass2 && (defMode || isHighSignalRuleChunk(chunk.text))) {
+            pass2Candidates.push(chunk);
+          }
+        } else {
+          const { storedAny, skippedDupes } = routeParsedWithDedup(parsed, collected);
+          if (storedAny) stats.parsedChunks++;
+          stats.skippedDupes += skippedDupes;
+          
+          if (!isPass2 && storedAny && isHighSignalRuleChunk(chunk.text)) {
+            pass2Candidates.push(chunk);
+          }
+        }
+      } catch (e) {
+        console.error(`${logPrefix} Error: ${e.message}`);
+        stats.failedChunks++;
+      }
+      
+      // Small delay to avoid rate limiting
+      await sleep(50);
+    }
+  };
+  
+  // Run workers in parallel
+  const workers = [];
+  for (let w = 0; w < modeConfig.geminiConcurrency; w++) {
+    workers.push(worker(w + 1));
+  }
+  await Promise.all(workers);
+  
+  return { stats, pass2Candidates };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// SECTION 14: MAIN API ENDPOINT
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
+  console.log("\n" + "═".repeat(70));
   console.log("UPLOAD ENDPOINT HIT");
+  console.log("═".repeat(70));
+  
+  const timer = new Timer();
 
   try {
-    if (!req.file) return res.status(400).json({ error: "No PDF uploaded" });
+    if (!req.file) {
+      return res.status(400).json({ error: "No PDF uploaded" });
+    }
+    
+    // Get processing mode from query param or use default
+    const mode = req.query.mode || CONFIG.processing.defaultMode;
+    const modeConfig = CONFIG.processing.modes[mode] || CONFIG.processing.modes.balanced;
+    console.log(`Processing mode: ${mode}`);
 
-    console.log("1. Uploading to Storage...");
+    // Step 1: Upload to storage
+    console.log("\n1. Uploading to Storage...");
     const publicUrl = await uploadFileToSupabase(req.file);
     console.log(`   -> URL: ${publicUrl || "Skipped (Local)"}`);
+    timer.mark("upload");
 
-    console.log("2. Creating Job...");
+    // Step 2: Create job record
+    console.log("\n2. Creating Job...");
     const job = await createJobRecord(req.file.originalname, publicUrl);
     console.log(`   -> Job ID: ${job.id}`);
+    timer.mark("job_created");
 
+    // Step 3: Parse PDF
+    console.log("\n3. Parsing PDF...");
     const data = await pdf(req.file.buffer);
     const policyMeta = extractPolicyMetadata(data.text);
     const chunks = createSemanticChunks(data.text);
-    console.log(`TOTAL CHUNKS: ${chunks.length}`);
+    console.log(`   -> ${chunks.length} chunks created`);
+    console.log(`   -> Policy: ${policyMeta.policy_name || "Unknown"}`);
+    timer.mark("pdf_parsed");
 
+    // Initialize collected results
     const collected = {
       definitions: {},
       coverage: [],
@@ -533,121 +770,45 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
       claim_rejection_conditions: [],
     };
 
-    // ✅ NEW: Track rule engine stats separately
-    const ruleEngineStats = {
-      totalMatched: 0,
-      totalDuplicates: 0,
-      processingTimeMs: 0,
+    // Step 4: Rule Engine Pass (Sequential for cross-chunk continuation)
+    console.log("\n4. Rule Engine Pass (Sequential)...");
+    const ruleEngineStats = await runRuleEnginePass(chunks, collected);
+    timer.mark("rule_engine");
+    
+    const afterRuleEngine = {
+      coverage: collected.coverage.length,
+      exclusions: collected.exclusions.length,
+      waiting_periods: collected.waiting_periods.length,
+      financial_limits: collected.financial_limits.length,
+      claim_rejection: collected.claim_rejection_conditions.length,
     };
+    console.log(`   -> After rule engine:`, afterRuleEngine);
 
-    // ✅ NEW: Cross-chunk continuation support
-    let trailingFragment = null;
+    // Step 5: Gemini Pass 1 (Parallel)
+    console.log("\n5. Gemini Pass 1 (Parallel)...");
+    const { stats: geminiStats1, pass2Candidates } = await runGeminiPass(
+      chunks, collected, modeConfig, false
+    );
+    timer.mark("gemini_pass1");
+    console.log(`   -> Parsed: ${geminiStats1.parsedChunks}, Failed: ${geminiStats1.failedChunks}, Dupes skipped: ${geminiStats1.skippedDupes}`);
 
-    let parsedChunks = 0;
-    let failedChunks = 0;
-    const pass2Candidates = [];
-
-    const runWorkerPool = async (tasks, concurrency, isPass2 = false) => {
-      let index = 0;
-      const workers = [];
-
-      const worker = async (id) => {
-        while (true) {
-          const i = index++;
-          if (i >= tasks.length) break;
-
-          const task = tasks[i];
-          const defMode = task.hint === "definitions" || isDefinitionChunk(task.text);
-
-          console.log(
-            `[${isPass2 ? "P2" : "P1"} Worker ${id}] Processing ${i + 1}/${tasks.length} | Mode: ${
-              defMode ? "DEF" : "RULE"
-            }`
-          );
-
-          // ════ HYBRID STRATEGY (Phase 1) ════
-          // 1. RUN RULE ENGINE FIRST (Instant, Free)
-          if (!defMode) {
-            // ✅ UPDATED: Use v5.1 options including cross-chunk continuation
-            const ruleResults = runRuleBasedExtraction(task.text, {
-              similarityThreshold: 0.92,
-              prependFragment: trailingFragment,
-              debug: false,
-            });
-
-            // ✅ UPDATED: Capture trailing fragment for next chunk
-            if (ruleResults?._meta?.trailingFragment) {
-              trailingFragment = ruleResults._meta.trailingFragment;
-            } else {
-              trailingFragment = null;
-            }
-
-            // ✅ UPDATED: Safe access to _meta with defaults
-            const meta = ruleResults?._meta || {};
-            const rulesMatched = meta.rulesMatched || 0;
-            const duplicatesFound = meta.duplicatesFound || 0;
-            const processingTimeMs = meta.processingTimeMs || 0;
-
-            if (rulesMatched > 0) {
-              const applied = Array.isArray(meta.rulesApplied)
-                ? meta.rulesApplied.join(", ")
-                : "state_machine_v5.1";
-
-              console.log(`   -> ⚡ Rules Found: ${rulesMatched} (${applied}) [${processingTimeMs}ms]`);
-
-              routeRuleResults(ruleResults, collected);
-
-              // ✅ NEW: Accumulate stats
-              ruleEngineStats.totalMatched += rulesMatched;
-              ruleEngineStats.totalDuplicates += duplicatesFound;
-              ruleEngineStats.processingTimeMs += processingTimeMs;
-            }
-          }
-
-          // 2. RUN AI ENGINE (Gemini)
-          const model = getGeminiModel(defMode, isPass2 ? 4096 : 1024);
-          const prompt = buildPrompt(defMode, task.text, isPass2);
-
-          try {
-            const result = await withTimeout(model.generateContent(prompt), 30000);
-            const parsed = safeJsonParse(result.response.text());
-
-            if (!parsed || parsed.type === "none") {
-              if (!isPass2 && (defMode || isHighSignalRuleChunk(task.text))) {
-                pass2Candidates.push(task);
-              }
-            } else {
-              const { storedAny } = routeParsed(parsed, collected);
-              if (storedAny) parsedChunks++;
-              if (!isPass2 && storedAny && isHighSignalRuleChunk(task.text)) {
-                pass2Candidates.push(task);
-              }
-            }
-          } catch (e) {
-            console.error(`[Worker ${id}] Error:`, e.message);
-            failedChunks++;
-          }
-
-          await sleep(100);
-        }
-      };
-
-      for (let w = 0; w < concurrency; w++) workers.push(worker(w + 1));
-      await Promise.all(workers);
-    };
-
-    await runWorkerPool(chunks, 5);
-    console.log(`PASS 1 DONE. Candidates for P2: ${pass2Candidates.length}`);
-    console.log(`   -> Rule Engine: ${ruleEngineStats.totalMatched} rules, ${ruleEngineStats.totalDuplicates} dupes blocked, ${ruleEngineStats.processingTimeMs}ms total`);
-
-    if (pass2Candidates.length > 0) {
-      const uniqueTasks = [...new Map(pass2Candidates.map((item) => [item.id, item])).values()];
-      console.log(`STARTING PASS 2 with ${uniqueTasks.length} chunks...`);
-      await runWorkerPool(uniqueTasks, 5, true);
+    // Step 6: Gemini Pass 2 (if enabled and candidates exist)
+    let geminiStats2 = { parsedChunks: 0, failedChunks: 0, skippedDupes: 0 };
+    
+    if (modeConfig.enablePass2 && pass2Candidates.length > 0) {
+      console.log(`\n6. Gemini Pass 2 (${pass2Candidates.length} candidates)...`);
+      const uniqueCandidates = [...new Map(pass2Candidates.map(c => [c.id, c])).values()];
+      const result = await runGeminiPass(uniqueCandidates, collected, modeConfig, true);
+      geminiStats2 = result.stats;
+      timer.mark("gemini_pass2");
+      console.log(`   -> Parsed: ${geminiStats2.parsedChunks}, Failed: ${geminiStats2.failedChunks}`);
+    } else {
+      console.log("\n6. Gemini Pass 2 skipped");
+      timer.mark("gemini_pass2");
     }
 
-    // ✅ UPDATED: Use fuzzy deduplication instead of simple Set
-    console.log("4. Running fuzzy deduplication...");
+    // Step 7: Final fuzzy deduplication
+    console.log("\n7. Final Fuzzy Deduplication...");
     const beforeDedup = {
       coverage: collected.coverage.length,
       exclusions: collected.exclusions.length,
@@ -670,72 +831,83 @@ app.post("/upload-pdf", upload.single("pdf"), async (req, res) => {
       claim_rejection_conditions: collected.claim_rejection_conditions.length,
     };
 
-    const totalRemoved = 
-      (beforeDedup.coverage - afterDedup.coverage) +
-      (beforeDedup.exclusions - afterDedup.exclusions) +
-      (beforeDedup.waiting_periods - afterDedup.waiting_periods) +
-      (beforeDedup.financial_limits - afterDedup.financial_limits) +
-      (beforeDedup.claim_rejection_conditions - afterDedup.claim_rejection_conditions);
+    const totalRemoved = Object.keys(beforeDedup).reduce(
+      (sum, key) => sum + (beforeDedup[key] - afterDedup[key]), 0
+    );
+    console.log(`   -> Removed ${totalRemoved} near-duplicates`);
+    timer.mark("dedup");
 
-    console.log(`   -> Fuzzy dedup removed ${totalRemoved} near-duplicates`);
-
+    // Step 8: Build output structures
+    console.log("\n8. Building Output...");
     const cpdm = buildCPDM(policyMeta, collected);
-    const normalized = normalizePolicy([
-      {
-        coverage: collected.coverage,
-        exclusions: collected.exclusions,
-        waiting_periods: collected.waiting_periods,
-        financials: collected.financial_limits,
-        claim_risks: collected.claim_rejection_conditions,
-      },
-    ]);
+    const normalized = normalizePolicy([{
+      coverage: collected.coverage,
+      exclusions: collected.exclusions,
+      waiting_periods: collected.waiting_periods,
+      financials: collected.financial_limits,
+      claim_risks: collected.claim_rejection_conditions,
+    }]);
+    timer.mark("build_output");
 
-    console.log("5. Saving Results...");
-
-    // ✅ UPDATED: Include rule engine stats in job record
-    await completeJobRecord(job.id, cpdm, policyMeta, { 
-      parsedChunks, 
-      failedChunks,
+    // Step 9: Save results
+    console.log("\n9. Saving Results...");
+    const allStats = {
       ruleEngine: ruleEngineStats,
-      dedupRemoved: totalRemoved,
-    });
+      geminiPass1: geminiStats1,
+      geminiPass2: geminiStats2,
+      dedup: { before: beforeDedup, after: afterDedup, removed: totalRemoved },
+      timing: timer.report(),
+    };
+    
+    await completeJobRecord(job.id, cpdm, policyMeta, allStats);
 
-    const totalRules = cpdm.rules.length || 1;
-    const exclusions = cpdm.rules.filter((r) => r.category === "exclusion").length;
-    const risks = cpdm.rules.filter((r) => r.category === "claim_rejection").length;
-    const coverage = cpdm.rules.filter((r) => r.category === "coverage").length;
-
-    let rawScore = 100 + coverage * 1.5 - exclusions * 2 - risks * 1.5;
+    // Calculate health score
+    const exclusionCount = cpdm.rules.filter(r => r.category === "exclusion").length;
+    const riskCount = cpdm.rules.filter(r => r.category === "claim_rejection").length;
+    const coverageCount = cpdm.rules.filter(r => r.category === "coverage").length;
+    
+    const rawScore = 100 + coverageCount * 1.5 - exclusionCount * 2 - riskCount * 1.5;
     const healthScore = Math.max(0, Math.min(100, Math.round(rawScore)));
 
+    // Sync to database
     syncToDatabase(job.id, policyMeta, cpdm, healthScore);
+    timer.mark("saved");
 
-    console.log("   -> Saved & Syncing...");
+    // Final summary
+    console.log("\n" + "═".repeat(70));
+    console.log("PROCESSING COMPLETE");
+    console.log("═".repeat(70));
+    console.log(`Total time: ${timer.elapsed()}ms`);
+    console.log(`Rules extracted: ${cpdm.rules.length}`);
+    console.log(`Definitions: ${Object.keys(collected.definitions).length}`);
+    console.log(`Health score: ${healthScore}`);
+    console.log("═".repeat(70) + "\n");
 
     res.json({
       message: "Analysis Complete",
       jobId: job.id,
       fileUrl: publicUrl,
-      meta: { 
-        ...policyMeta, 
-        totalChunks: chunks.length, 
-        parsedChunks, 
-        failedChunks,
-        ruleEngine: ruleEngineStats,  // ✅ NEW: Expose rule engine stats
-        dedupStats: { before: beforeDedup, after: afterDedup, removed: totalRemoved },
+      meta: {
+        ...policyMeta,
+        processingMode: mode,
+        totalChunks: chunks.length,
+        stats: allStats,
       },
       definitions: collected.definitions,
       normalized,
       cpdm,
+      healthScore,
     });
+
   } catch (e) {
-    console.error(e);
+    console.error("\n❌ ERROR:", e);
+    console.error(e.stack);
     res.status(500).json({ error: e.message });
   }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 14: CPDM BUILDER
+// SECTION 15: CPDM BUILDER
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 function buildCPDM(policyMeta, collected) {
@@ -744,24 +916,41 @@ function buildCPDM(policyMeta, collected) {
     definition,
   }));
 
-  const coverages = collected.coverage.map((text) => ({ category: "coverage", text }));
-  const exclusions = collected.exclusions.map((text) => ({ category: "exclusion", text }));
-  const waitingPeriods = collected.waiting_periods.map((text) => ({ category: "waiting_period", text }));
-  const limits = collected.financial_limits.map((text) => ({ category: "financial_limit", text }));
-  const claimRisks = collected.claim_rejection_conditions.map((text) => ({
-    category: "claim_rejection",
-    text,
-  }));
+  const rules = [
+    ...collected.coverage.map(text => ({ category: "coverage", text })),
+    ...collected.exclusions.map(text => ({ category: "exclusion", text })),
+    ...collected.waiting_periods.map(text => ({ category: "waiting_period", text })),
+    ...collected.financial_limits.map(text => ({ category: "financial_limit", text })),
+    ...collected.claim_rejection_conditions.map(text => ({ category: "claim_rejection", text })),
+  ];
 
   return {
     meta: policyMeta,
     definitions,
-    rules: [...coverages, ...exclusions, ...waitingPeriods, ...limits, ...claimRisks],
+    rules,
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
-// SECTION 15: START SERVER
+// SECTION 16: HEALTH CHECK & START SERVER
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
-app.listen(3000, () => console.log("Server running on 3000"));
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    version: "1.8",
+    supabase: !!supabase,
+    gemini: !!process.env.GEMINI_API_KEY,
+  });
+});
+
+app.listen(3000, () => {
+  console.log("\n" + "═".repeat(70));
+  console.log("SERVER STARTED");
+  console.log("═".repeat(70));
+  console.log("Port: 3000");
+  console.log("Version: 1.8 (Refined Hybrid)");
+  console.log("Supabase:", supabase ? "Connected" : "Disabled");
+  console.log("Gemini:", process.env.GEMINI_API_KEY ? "Configured" : "Missing");
+  console.log("═".repeat(70) + "\n");
+});
