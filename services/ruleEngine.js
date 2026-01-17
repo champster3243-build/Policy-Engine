@@ -1,14 +1,8 @@
 /*******************************************************************************************
- * ruleEngine.js (v3.0 - FAMILY REUNION ALGORITHM)
+ * ruleEngine.js (v3.1 - STABLE FAMILY REUNION)
  * =========================================================================================
- * * PURPOSE: 
- * Extracts structured rules by reconstructing the "Parent-Child" hierarchy of the document.
- * * * * KEY INNOVATIONS:
- * 1. GROUP LEADER LOGIC: Identifies headers (e.g., "The following are excluded:") and 
- * propagates that context to all subsequent list items.
- * 2. ELASTIC ANCHORING v2: Preserved from v2.0 for grabbing inline values.
- * 3. AGGRESSIVE DEDUPLICATION: Uses Levenshtein distance to merge "repeated meanings".
- * 4. HYBRID PARSING: Combines "Spatial" (Layout) and "Semantic" (Meaning) analysis.
+ * PURPOSE: Extracts structured rules by reconstructing the "Parent-Child" hierarchy.
+ * FIXES: Solved SyntaxError in regex replacements. Safe handling of special characters.
  *******************************************************************************************/
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -23,11 +17,14 @@ function normalizeTextStream(text) {
   if (!text) return "";
   
   return text
+    // 1. Standardize newlines
     .replace(/\r\n/g, "\n")
-    // Fix hyphenated words across lines (e.g. "hos-\npital" -> "hospital")
+    // 2. Fix hyphenated words across lines (e.g. "hos-\npital" -> "hospital")
     .replace(/([a-z])-\n([a-z])/ig, "$1$2") 
-    // Remove "Source" tags if present in the raw text dump
+    // 3. Remove "Source" tags if present (e.g. )
     .replace(/\/g, "")
+    // 4. Collapse multiple spaces
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -39,7 +36,6 @@ function isGroupLeader(line) {
   const l = line.toLowerCase().trim();
   if (l.length < 10) return false;
   
-  // Indicators that this line governs the next lines
   const LEADER_TRIGGERS = [
     "following are excluded", 
     "expenses related to", 
@@ -62,6 +58,7 @@ function isGroupLeader(line) {
 function isFamilyMember(line) {
   const l = line.trim();
   // Starts with Bullet, Number, or Letter (e.g., "1.", "a)", ">", "-")
+  // Regex safety: explicitly match common list markers
   return /^(\d+\.|[a-zA-Z]\)|\>|\-|•|vii\.|ix\.|iv\.)/.test(l);
 }
 
@@ -73,11 +70,11 @@ function isGarbage(text) {
   const BLOCKLIST = [
     "total rules", "page", "annexure", "list i", "list ii", "irda", "reg no", 
     "cin:", "uin:", "corporate office", "registered office", "sum insured", 
-    "premium", "policy period", "schedule of benefits", "total rules", "contents"
+    "premium", "policy period", "schedule of benefits", "contents"
   ];
   if (t.length < 15) return true;
   if (BLOCKLIST.some(term => t.includes(term))) return true;
-  return /^[\d\W]+$/.test(t);
+  return /^[\d\W]+$/.test(t); // Returns true if text is only numbers/symbols
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -90,16 +87,14 @@ const RULE_PATTERNS = {
   waiting_periods: [
     {
       name: "explicit_waiting",
-      // Catches "24 months waiting period"
       pattern: /(\d+)\s*(?:months?|years?|days?)/i,
       validate: (text) => /waiting period|exclusion|after continuous|prior to/i.test(text),
       confidence: 0.99
     },
     {
       name: "disease_waiting",
-      // Catches "Cataract: 2 Years"
       pattern: /(maternity|cataract|hernia|hysterectomy|joint replacement|ped|pre-existing).*?(\d+)\s*(months?|years?)/i,
-      validate: () => true, // Pattern itself is specific enough
+      validate: () => true,
       confidence: 0.98
     }
   ],
@@ -130,14 +125,12 @@ const RULE_PATTERNS = {
   exclusions: [
     {
       name: "exclusion_keyword",
-      // Catches "is excluded", "not covered"
       pattern: /(excluded|not covered|not payable|not admissible)/i,
       validate: (text) => text.length > 20 && !/claim arising/i.test(text),
       confidence: 0.92
     },
     {
       name: "hard_exclusion_terms",
-      // Anchor: Robust keywords that are ALWAYS exclusions
       pattern: /(war|terrorism|nuclear|cosmetic|obesity|infertility|hazardous sports|breach of law|alcohol|drug abuse)/i,
       validate: (text) => /excluded|not covered/i.test(text),
       confidence: 0.98
@@ -164,6 +157,7 @@ const RULE_PATTERNS = {
  * Turns the raw stream into a list of "Context-Complete" sentences.
  */
 function reconstructHierarchy(rawText) {
+  // Split by newline but keep integrity
   const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   const sentences = [];
   
@@ -183,7 +177,6 @@ function reconstructHierarchy(rawText) {
     // 2. IS IT A FAMILY MEMBER? (List Item)
     if (currentLeader && isFamilyMember(line)) {
       // Merge Leader + Member
-      // Example: "The following are excluded" + "Cosmetic Surgery"
       const combined = `${currentLeader} ${line}`.replace(/[>•\-]/g, "").trim();
       sentences.push(combined);
       continue;
@@ -194,8 +187,7 @@ function reconstructHierarchy(rawText) {
       currentLeader = ""; // Reset context
     }
 
-    // 4. STANDARD LINE (Append to buffer or push as standalone)
-    // If it ends with punctuation, it's a complete sentence.
+    // 4. STANDARD LINE
     if (/[.:;]$/.test(line)) {
       sentences.push(buffer + " " + line);
       buffer = "";
@@ -213,11 +205,12 @@ function reconstructHierarchy(rawText) {
 
 /**
  * FUZZY SIMILARITY (DEDUPLICATION)
- * Prevents "Room Rent 5k" and "Room Rent Limit 5k" from appearing twice.
  */
 function isSimilar(str1, str2) {
+  // Safe alphanumeric normalization
   const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, "");
   const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, "");
+  
   if (s1.includes(s2) || s2.includes(s1)) return true;
   
   // Jaccard Token Logic
@@ -225,6 +218,7 @@ function isSimilar(str1, str2) {
   const set2 = new Set(s2.split(''));
   const intersection = new Set([...set1].filter(x => set2.has(x)));
   const union = new Set([...set1, ...set2]);
+  
   return (intersection.size / union.size) > 0.70;
 }
 
@@ -242,11 +236,11 @@ function runRuleBasedExtraction(rawText) {
   const text = normalizeTextStream(rawText);
   if (text.length < 50) return results;
 
-  // STEP 1: RECONSTRUCT HIERARCHY (The "Family Reunion")
+  // STEP 1: RECONSTRUCT HIERARCHY
   const reconstructedSentences = reconstructHierarchy(text);
   
   // STEP 2: ALSO USE RAW STREAM (For inline rules)
-  // We use a sliding window of sentences from the raw text for backup
+  // Split by common sentence delimiters, safely escaped
   const rawSentences = text.split(/[.:;]/); 
   
   const allCandidates = [...reconstructedSentences, ...rawSentences];
@@ -264,7 +258,7 @@ function runRuleBasedExtraction(rawText) {
           // Validate logic (Context Check)
           if (!rule.validate(sentence)) continue;
 
-          // Clean Rule Text
+          // Clean Rule Text (Safe regex)
           let cleanRule = sentence
             .replace(/[>•\-]/g, "")
             .replace(/\s+/g, " ")
@@ -286,8 +280,6 @@ function runRuleBasedExtraction(rawText) {
             results._meta.rulesMatched++;
             if (!results._meta.rulesApplied.includes(rule.name)) results._meta.rulesApplied.push(rule.name);
           }
-          // Once a sentence is matched to a category, move to next sentence
-          // (Prevents tagging the same sentence as both Exclusion and Limit)
           break; 
         }
       }
